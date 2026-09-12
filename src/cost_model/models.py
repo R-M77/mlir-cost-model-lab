@@ -47,6 +47,14 @@ class Operation:
 
 
 @dataclass(frozen=True)
+class Target:
+    """Idealized hardware ceilings used by the roofline lower-bound model."""
+
+    peak_compute_gflops: float
+    memory_bandwidth_gbps: float
+
+
+@dataclass(frozen=True)
 class Graph:
     """A validated graph with shapes inferred for every value."""
 
@@ -55,3 +63,4 @@ class Graph:
     operations: tuple[Operation, ...]
     outputs: tuple[str, ...]
     values: dict[str, Tensor]
+    target: Target | None = None

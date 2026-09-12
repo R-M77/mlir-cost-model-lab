@@ -5,10 +5,11 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 from json import JSONDecodeError
+from math import isfinite
 from pathlib import Path
 from typing import Any
 
-from .models import DTYPE_BYTES, Graph, Operation, Tensor
+from .models import DTYPE_BYTES, Graph, Operation, Target, Tensor
 
 SUPPORTED_OPS = frozenset({"add", "matmul", "mul", "relu"})
 
@@ -50,6 +51,32 @@ def _parse_tensor(name: str, value: object, label: str) -> Tensor:
         supported = ", ".join(sorted(DTYPE_BYTES))
         raise GraphValidationError(f"{label} unsupported dtype {dtype!r}; use one of {supported}")
     return Tensor(name=name, shape=shape, dtype=dtype)
+
+
+def _parse_target_number(value: object, label: str) -> float:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not isfinite(value)
+        or value <= 0
+    ):
+        raise GraphValidationError(f"{label} must be a positive finite number")
+    return float(value)
+
+
+def _parse_target(value: object) -> Target | None:
+    # Omitted and explicit null targets both disable roofline analysis.
+    if value is None:
+        return None
+    spec = _require_mapping(value, "target")
+    return Target(
+        peak_compute_gflops=_parse_target_number(
+            spec.get("peak_compute_gflops"), "target.peak_compute_gflops"
+        ),
+        memory_bandwidth_gbps=_parse_target_number(
+            spec.get("memory_bandwidth_gbps"), "target.memory_bandwidth_gbps"
+        ),
+    )
 
 
 def _parse_value_names(value: object, label: str, expected: int) -> tuple[str, ...]:
@@ -104,6 +131,7 @@ def parse_graph(payload: Mapping[str, Any]) -> Graph:
     """Validate a JSON-compatible mapping and infer all operation outputs."""
     root = _require_mapping(payload, "graph")
     name = _require_nonempty_string(root.get("name"), "name")
+    target = _parse_target(root.get("target"))
 
     raw_inputs = root.get("inputs")
     if not isinstance(raw_inputs, Mapping):
@@ -170,7 +198,7 @@ def parse_graph(payload: Mapping[str, Any]) -> Graph:
         if output_name not in values:
             raise GraphValidationError(f"unknown graph output value {output_name!r}")
 
-    return Graph(name, inputs, tuple(operations), outputs, values)
+    return Graph(name, inputs, tuple(operations), outputs, values, target)
 
 
 def load_graph(path: str | Path) -> Graph:

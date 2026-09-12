@@ -6,7 +6,7 @@ from collections import Counter
 from collections.abc import Mapping
 from typing import Any
 
-from .models import Graph, Operation
+from .models import Graph, Operation, Target
 from .parser import parse_graph
 
 ELEMENTWISE_OPS = frozenset({"add", "mul", "relu"})
@@ -15,6 +15,38 @@ ELEMENTWISE_OPS = frozenset({"add", "mul", "relu"})
 def _intensity(flops: int, bytes_read: int, bytes_written: int) -> float:
     traffic = bytes_read + bytes_written
     return flops / traffic if traffic else 0.0
+
+
+def _roofline_metrics(
+    flops: int,
+    bytes_read: int,
+    bytes_written: int,
+    target: Target | None,
+) -> dict[str, Any] | None:
+    """Return idealized roofline metrics, or null when no target is supplied."""
+    if target is None:
+        return None
+
+    logical_bytes = bytes_read + bytes_written
+    arithmetic_intensity = _intensity(flops, bytes_read, bytes_written)
+    ridge_point = target.peak_compute_gflops / target.memory_bandwidth_gbps
+    compute_time_us = flops / (target.peak_compute_gflops * 1_000)
+    memory_time_us = logical_bytes / (target.memory_bandwidth_gbps * 1_000)
+    return {
+        "arithmetic_intensity": arithmetic_intensity,
+        "ridge_point": ridge_point,
+        "bound": "compute" if arithmetic_intensity >= ridge_point else "memory",
+        "estimated_time_us": max(compute_time_us, memory_time_us),
+    }
+
+
+def _target_report(target: Target | None) -> dict[str, float] | None:
+    if target is None:
+        return None
+    return {
+        "peak_compute_gflops": target.peak_compute_gflops,
+        "memory_bandwidth_gbps": target.memory_bandwidth_gbps,
+    }
 
 
 def _op_flops(operation: Operation, graph: Graph) -> int:
@@ -46,6 +78,9 @@ def _estimate_operations(graph: Graph) -> list[dict[str, Any]]:
                 "bytes_read": bytes_read,
                 "bytes_written": bytes_written,
                 "arithmetic_intensity": _intensity(flops, bytes_read, bytes_written),
+                "roofline": _roofline_metrics(
+                    flops, bytes_read, bytes_written, graph.target
+                ),
             }
         )
     return reports
@@ -90,9 +125,13 @@ def estimate_graph(graph: Graph) -> dict[str, Any]:
         "arithmetic_intensity": _intensity(
             total_flops, total_bytes_read, total_bytes_written
         ),
+        "roofline": _roofline_metrics(
+            total_flops, total_bytes_read, total_bytes_written, graph.target
+        ),
     }
     return {
         "graph": graph.name,
+        "target": _target_report(graph.target),
         "ops": operations,
         "totals": totals,
         "fusion": _fusion_report(graph),

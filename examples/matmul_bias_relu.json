@@ -1,5 +1,9 @@
 {
   "name": "matmul_bias_relu",
+  "target": {
+    "peak_compute_gflops": 1000.0,
+    "memory_bandwidth_gbps": 100.0
+  },
   "inputs": {
     "lhs": {"shape": [2, 3], "dtype": "f32"},
     "rhs": {"shape": [3, 4], "dtype": "f32"},

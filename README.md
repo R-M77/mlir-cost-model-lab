@@ -2,7 +2,7 @@
 
 A small, dependency-light Python 3.11+ project for making tensor graph costs explicit. It accepts a compact JSON graph inspired by MLIR's value-and-operation model and produces deterministic estimates that are easy to inspect in a code review.
 
-This is a portfolio slice, not a hardware benchmark. It models static operation and tensor traffic counts; it does not claim to predict wall-clock runtime.
+This is a portfolio slice, not a hardware benchmark. It models static operation and logical tensor traffic counts. When an optional target is supplied, it also computes an idealized roofline lower bound; that estimate is not measured or predicted wall-clock runtime.
 
 ## Problem
 
@@ -20,10 +20,10 @@ The package under `src/cost_model` is split into four small layers:
 
 - `models.py` — immutable tensor, operation, and graph data structures.
 - `parser.py` — JSON schema validation, value lookup, and static shape inference.
-- `estimator.py` — FLOP, byte-traffic, arithmetic-intensity, and fusion calculations.
+- `estimator.py` — FLOP, byte-traffic, arithmetic-intensity, roofline, and fusion calculations.
 - `cli.py` / `__main__.py` — stable `python -m cost_model` interface and readable JSON output.
 
-The parser processes operations in source order, so an operation can only use an input or an earlier result. Elementwise `add` and `mul` use trailing-dimension broadcasting; `matmul` is rank-2 only. The estimator preserves operation order and emits JSON-friendly integer counts plus floating-point intensity values.
+The parser processes operations in source order, so an operation can only use an input or an earlier result. Elementwise `add` and `mul` use trailing-dimension broadcasting; `matmul` is rank-2 only. An optional validated target is carried with the graph. The estimator preserves operation order and emits JSON-friendly integer counts plus floating-point intensity and roofline values.
 
 ## Quickstart
 
@@ -50,11 +50,15 @@ The command exits with status `2` and prints a concise `error:` message for inva
 
 ## Input format
 
-A graph has a name, named tensor inputs, a source-ordered list of single-output operations, and graph outputs:
+A graph has a name, named tensor inputs, a source-ordered list of single-output operations, graph outputs, and an optional target for roofline analysis:
 
 ```json
 {
   "name": "matmul_bias_relu",
+  "target": {
+    "peak_compute_gflops": 1000.0,
+    "memory_bandwidth_gbps": 100.0
+  },
   "inputs": {
     "lhs": {"shape": [2, 3], "dtype": "f32"},
     "rhs": {"shape": [3, 4], "dtype": "f32"},
@@ -71,16 +75,22 @@ A graph has a name, named tensor inputs, a source-ordered list of single-output 
 
 Supported operations are `matmul`, `add`, `mul`, and `relu`. Supported dtypes include `f16`, `bf16`, `f32`, `f64`, `bool`, `i8`, `u8`, `i32`, and `i64`.
 
+The optional `target` values are decimal rates: `peak_compute_gflops` is peak compute throughput in GFLOP/s, and `memory_bandwidth_gbps` is memory bandwidth in GB/s. Both fields are required when `target` is an object and must be positive, finite JSON numbers; booleans, strings, zero, negative values, `NaN`, and infinity are rejected. An omitted or explicit `null` target disables roofline analysis. In that case the report emits `"target": null` and `"roofline": null` for every operation and for `totals`; it never invents hardware defaults.
+
 ## Cost definitions
 
 - **Matmul FLOPs:** `2 × M × K × N`, counting one multiply and one add per output reduction term.
 - **Elementwise FLOPs:** one scalar operation per output element. `relu` counts its scalar comparison as one operation so it remains visible in the report; this is a modeling convention, not a hardware claim.
 - **Bytes read:** the sum of the storage size of each input value referenced by the operation.
 - **Bytes written:** the storage size of the operation's output value.
-- **Arithmetic intensity:** `FLOPs / (bytes read + bytes written)`. Zero traffic would produce `0.0` rather than a division error.
+- **Arithmetic intensity:** `FLOPs / (bytes read + bytes written)`, in FLOPs/byte. Zero traffic would produce `0.0` rather than a division error.
+- **Roofline ridge point:** `peak_compute_gflops / memory_bandwidth_gbps`, in FLOPs/byte. A per-op or total analysis is `compute`-bound when its arithmetic intensity is at least the ridge point (including equality); otherwise it is `memory`-bound.
+- **Roofline estimated time:** `max(compute_time_us, memory_time_us)`, in microseconds. `compute_time_us = FLOPs / (peak_compute_gflops × 1000)` and `memory_time_us = (bytes read + bytes written) / (memory_bandwidth_gbps × 1000)`. The `1000` conversion follows from decimal GFLOP/s and GB/s and converts seconds to microseconds. This is an idealized lower-bound calculation from logical traffic, not a measured runtime.
 - **Fusion candidates:** adjacent `add`, `mul`, or `relu` operations that share a single-use intermediate. `bytes_avoided` estimates the intermediate write plus the later read that a fusion could remove.
 
-The report contains `ops`, `totals`, and a `fusion` section. Counts are exact for the model above; they are not measurements of a particular accelerator, cache, compiler, or runtime.
+With a target, each entry in `ops` and `totals` contains a `roofline` object with `arithmetic_intensity` (FLOPs/byte), `ridge_point` (FLOPs/byte), `bound`, and `estimated_time_us` (microseconds). The report also echoes the validated target. Without a target, those `roofline` values are explicit `null` rather than assumptions.
+
+The report contains `ops`, `totals`, a `fusion` section, and the target/roofline analysis described above. Counts are exact for the model above; roofline times are transparent lower bounds and are not measurements of a particular accelerator, cache, compiler, or runtime.
 
 ## Limitations
 
@@ -88,10 +98,10 @@ The report contains `ops`, `totals`, and a `fusion` section. Counts are exact fo
 - `matmul` accepts rank-2 tensors and requires matching dtypes.
 - Elementwise broadcasting follows a small trailing-dimension rule; there is no layout or stride model.
 - Every operation has exactly one output, and operations are already topologically ordered.
-- Byte traffic is logical tensor storage traffic. It does not model cache reuse, tiling, alignment, transfers, or aliasing.
+- Byte traffic is logical tensor storage traffic. It does not model cache reuse, tiling, alignment, transfers, or aliasing; the roofline memory term uses the full logical read-plus-write total.
 - Fusion reporting is a local opportunity heuristic, not a legality proof or an optimizer.
-- The model intentionally omits latency, bandwidth, vectorization, parallelism, and device-specific instruction costs.
+- A supplied target provides idealized peak compute and bandwidth ceilings only. Roofline `estimated_time_us` values omit latency, utilization, vectorization, parallelism, overlap, and device-specific instruction costs, so they are lower-bound estimates rather than measured performance.
 
 ## Development
 
-The project has no runtime dependencies. Focused tests cover exact estimates, JSON file loading, CLI behavior, and invalid schema/reference/shape inputs. CI runs the test suite on Python 3.11 and 3.12.
+The project has no runtime dependencies. Focused tests cover exact estimates, target-aware compute- and memory-bound roofline cases, target validation, no-target null behavior, JSON file loading, CLI behavior, and invalid schema/reference/shape inputs. CI runs the test suite on Python 3.11 and 3.12.

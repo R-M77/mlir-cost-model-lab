@@ -14,7 +14,10 @@ from .parser import GraphValidationError, load_graph
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Estimate deterministic costs for an MLIR-inspired tensor graph."
+        description=(
+            "Estimate deterministic costs for an MLIR-inspired tensor graph; "
+            "include an input target for roofline lower bounds."
+        )
     )
     parser.add_argument("graph", type=Path, help="path to a graph JSON file")
     parser.add_argument(
