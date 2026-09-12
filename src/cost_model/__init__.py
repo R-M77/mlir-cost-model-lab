@@ -2,6 +2,7 @@
 
 from .estimator import analyze_graph, estimate_graph
 from .models import Graph, Operation, Target, Tensor
+from .optimizer import optimize_graph
 from .parser import GraphValidationError, load_graph, parse_graph
 
 __all__ = [
@@ -12,6 +13,7 @@ __all__ = [
     "Tensor",
     "analyze_graph",
     "estimate_graph",
+    "optimize_graph",
     "load_graph",
     "parse_graph",
 ]

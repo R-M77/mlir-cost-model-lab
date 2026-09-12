@@ -138,6 +138,13 @@ def estimate_graph(graph: Graph) -> dict[str, Any]:
     }
 
 
-def analyze_graph(payload: Mapping[str, Any]) -> dict[str, Any]:
-    """Validate and estimate a JSON-compatible graph mapping."""
-    return estimate_graph(parse_graph(payload))
+def analyze_graph(
+    payload: Mapping[str, Any], *, optimize: bool = False
+) -> dict[str, Any]:
+    """Validate and estimate a graph, optionally requesting optimization."""
+    graph = parse_graph(payload)
+    if optimize:
+        from .optimizer import optimize_graph
+
+        return optimize_graph(graph)
+    return estimate_graph(graph)

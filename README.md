@@ -16,11 +16,12 @@ Compiler and kernel decisions often need a quick first-order answer to questions
 
 ## Architecture
 
-The package under `src/cost_model` is split into four small layers:
+The package under `src/cost_model` is split into five small layers:
 
 - `models.py` — immutable tensor, operation, and graph data structures.
 - `parser.py` — JSON schema validation, value lookup, and static shape inference.
-- `estimator.py` — FLOP, byte-traffic, arithmetic-intensity, roofline, and fusion calculations.
+- `estimator.py` — FLOP, byte-traffic, arithmetic-intensity, roofline, and baseline fusion calculations.
+- `optimizer.py` — opt-in liveness-aware elementwise fusion planning and before/after reporting.
 - `cli.py` / `__main__.py` — stable `python -m cost_model` interface and readable JSON output.
 
 The parser processes operations in source order, so an operation can only use an input or an earlier result. Elementwise `add` and `mul` use trailing-dimension broadcasting; `matmul` is rank-2 only. An optional validated target is carried with the graph. The estimator preserves operation order and emits JSON-friendly integer counts plus floating-point intensity and roofline values.
@@ -37,6 +38,12 @@ Use compact output for scripts:
 
 ```bash
 PYTHONPATH=src python -m cost_model --compact examples/matmul_bias_relu.json
+```
+
+Request the opt-in optimization report (the unfused baseline remains embedded for auditability):
+
+```bash
+PYTHONPATH=src python -m cost_model --optimize examples/matmul_bias_relu.json
 ```
 
 Install the project and test extras in a virtual environment when desired:
@@ -86,11 +93,27 @@ The optional `target` values are decimal rates: `peak_compute_gflops` is peak co
 - **Arithmetic intensity:** `FLOPs / (bytes read + bytes written)`, in FLOPs/byte. Zero traffic would produce `0.0` rather than a division error.
 - **Roofline ridge point:** `peak_compute_gflops / memory_bandwidth_gbps`, in FLOPs/byte. A per-op or total analysis is `compute`-bound when its arithmetic intensity is at least the ridge point (including equality); otherwise it is `memory`-bound.
 - **Roofline estimated time:** `max(compute_time_us, memory_time_us)`, in microseconds. `compute_time_us = FLOPs / (peak_compute_gflops × 1000)` and `memory_time_us = (bytes read + bytes written) / (memory_bandwidth_gbps × 1000)`. The `1000` conversion follows from decimal GFLOP/s and GB/s and converts seconds to microseconds. This is an idealized lower-bound calculation from logical traffic, not a measured runtime.
-- **Fusion candidates:** adjacent `add`, `mul`, or `relu` operations that share a single-use intermediate. `bytes_avoided` estimates the intermediate write plus the later read that a fusion could remove.
+- **Fusion candidates:** the default report's informational candidates are adjacent `add`, `mul`, or `relu` operations that share a single-use intermediate. `bytes_avoided` estimates the intermediate write plus the later read that a fusion could remove; it does not change default totals.
 
 With a target, each entry in `ops` and `totals` contains a `roofline` object with `arithmetic_intensity` (FLOPs/byte), `ridge_point` (FLOPs/byte), `bound`, and `estimated_time_us` (microseconds). The report also echoes the validated target. Without a target, those `roofline` values are explicit `null` rather than assumptions.
 
 The report contains `ops`, `totals`, a `fusion` section, and the target/roofline analysis described above. Counts are exact for the model above; roofline times are transparent lower bounds and are not measurements of a particular accelerator, cache, compiler, or runtime.
+
+## Opt-in optimization report
+
+`--optimize` and `analyze_graph(payload, optimize=True)` return a deterministic report with this shape:
+
+- `baseline` — the complete, unchanged report that the default command returns. It includes every source operation, including dead operations, and its original informational `fusion` candidates.
+- `optimized` — the liveness-aware plan and recomputed costs. Its `ops` list contains only live operations in original source order; fusion-local reads and writes are removed from the affected entries so its totals add up exactly.
+- `optimized.applied_fusions` — ordered `{producer, consumer, intermediate, bytes_avoided, reason}` records for every legal fusion.
+- `optimized.eliminated_dead_operations` — operation names, in original source order, that cannot reach a graph output.
+- `optimized.bytes_avoided` — the sum of the applied fusion records. Each single-use intermediate contributes its logical write plus the later logical read once, including across a chained fusion sequence.
+- `optimized.graph_outputs`, `live_operation_order`, and `result_order` — explicit preservation of graph output names and the remaining operation/result order.
+- `optimized.legality_scope` — the assumptions and checks used by this pass.
+
+The optimizer fuses only adjacent source-order pairs where both operations are pure elementwise `add`, `mul`, or `relu`, the producer result is not a graph output, and that result has exactly one consumer. It never fuses across a non-adjacent operation, `matmul`, a graph output, or a multi-consumer intermediate. Liveness is computed backward from `Graph.outputs`, so dead operations contribute to the baseline for auditability but not to optimized totals or optimized roofline metrics. The pass plans a legal cost transformation; it does not execute the graph or rewrite an IR.
+
+The legality scope is intentionally explicit: this IR has no side-effect, layout, stride, or alias metadata. The pass therefore assumes the listed elementwise operations are pure and does not claim a general compiler legality proof. The optimized totals reuse the existing FLOP, logical byte-traffic, intensity, and roofline definitions exactly. With the example graph, the baseline is 64 FLOPs and 248 bytes, while the optimized result is 64 FLOPs and 184 bytes after one `add_bias` → `relu` fusion avoids 64 bytes; with the example target its optimized roofline is memory-bound with estimated total time `184 / (100 × 1000)` microseconds.
 
 ## Limitations
 
@@ -99,9 +122,9 @@ The report contains `ops`, `totals`, a `fusion` section, and the target/roofline
 - Elementwise broadcasting follows a small trailing-dimension rule; there is no layout or stride model.
 - Every operation has exactly one output, and operations are already topologically ordered.
 - Byte traffic is logical tensor storage traffic. It does not model cache reuse, tiling, alignment, transfers, or aliasing; the roofline memory term uses the full logical read-plus-write total.
-- Fusion reporting is a local opportunity heuristic, not a legality proof or an optimizer.
+- Default fusion reporting is an informational local opportunity heuristic; only the opt-in optimizer applies liveness and the narrower legality checks documented above.
 - A supplied target provides idealized peak compute and bandwidth ceilings only. Roofline `estimated_time_us` values omit latency, utilization, vectorization, parallelism, overlap, and device-specific instruction costs, so they are lower-bound estimates rather than measured performance.
 
 ## Development
 
-The project has no runtime dependencies. Focused tests cover exact estimates, target-aware compute- and memory-bound roofline cases, target validation, no-target null behavior, JSON file loading, CLI behavior, and invalid schema/reference/shape inputs. CI runs the test suite on Python 3.11 and 3.12.
+The project has no runtime dependencies. Focused tests cover exact estimates, target-aware compute- and memory-bound roofline cases, target validation, no-target null behavior, JSON file loading, default and optimized CLI behavior, optimizer legality/liveness, and invalid schema/reference/shape inputs. CI runs the test suite on Python 3.11 and 3.12.

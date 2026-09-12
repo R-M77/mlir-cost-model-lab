@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Sequence
 
 from .estimator import estimate_graph
+from .optimizer import optimize_graph
 from .parser import GraphValidationError, load_graph
 
 
@@ -25,6 +26,11 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="emit one-line JSON instead of the default readable form",
     )
+    parser.add_argument(
+        "--optimize",
+        action="store_true",
+        help="emit an opt-in before/after liveness-aware optimization report",
+    )
     return parser
 
 
@@ -32,7 +38,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     try:
         graph = load_graph(args.graph)
-        report = estimate_graph(graph)
+        report = optimize_graph(graph) if args.optimize else estimate_graph(graph)
     except GraphValidationError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
