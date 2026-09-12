@@ -1,0 +1,29 @@
+{
+  "name": "matmul_bias_relu",
+  "inputs": {
+    "lhs": {"shape": [2, 3], "dtype": "f32"},
+    "rhs": {"shape": [3, 4], "dtype": "f32"},
+    "bias": {"shape": [4], "dtype": "f32"}
+  },
+  "ops": [
+    {
+      "name": "matmul",
+      "op": "matmul",
+      "inputs": ["lhs", "rhs"],
+      "outputs": ["product"]
+    },
+    {
+      "name": "add_bias",
+      "op": "add",
+      "inputs": ["product", "bias"],
+      "outputs": ["biased"]
+    },
+    {
+      "name": "relu",
+      "op": "relu",
+      "inputs": ["biased"],
+      "outputs": ["output"]
+    }
+  ],
+  "outputs": ["output"]
+}
