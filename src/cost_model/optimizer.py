@@ -115,6 +115,32 @@ def _optimized_operations(
     return optimized
 
 
+def _cost_delta(baseline: dict[str, Any], optimized: dict[str, Any]) -> dict[str, Any]:
+    baseline_totals = baseline["totals"]
+    optimized_totals = optimized["totals"]
+    baseline_roofline = baseline_totals["roofline"]
+    optimized_roofline = optimized_totals["roofline"]
+    estimated_time_us = (
+        None
+        if baseline_roofline is None or optimized_roofline is None
+        else optimized_roofline["estimated_time_us"]
+        - baseline_roofline["estimated_time_us"]
+    )
+    return {
+        "flops": optimized_totals["flops"] - baseline_totals["flops"],
+        "bytes_read": optimized_totals["bytes_read"] - baseline_totals["bytes_read"],
+        "bytes_written": optimized_totals["bytes_written"]
+        - baseline_totals["bytes_written"],
+        "logical_bytes": (
+            optimized_totals["bytes_read"]
+            + optimized_totals["bytes_written"]
+            - baseline_totals["bytes_read"]
+            - baseline_totals["bytes_written"]
+        ),
+        "roofline": {"estimated_time_us": estimated_time_us},
+    }
+
+
 def optimize_graph(graph: Graph) -> dict[str, Any]:
     """Return a deterministic before/after optimization cost report.
 
@@ -171,4 +197,5 @@ def optimize_graph(graph: Graph) -> dict[str, Any]:
         "target": _target_report(graph.target),
         "baseline": baseline,
         "optimized": optimized,
+        "cost_delta": _cost_delta(baseline, optimized),
     }

@@ -74,6 +74,13 @@ def test_example_optimizer_fuses_live_pair_and_recomputes_roofline() -> None:
         "bound": "memory",
         "estimated_time_us": pytest.approx(184 / (100 * 1000)),
     }
+    assert report["cost_delta"] == {
+        "flops": 0,
+        "bytes_read": -32,
+        "bytes_written": -32,
+        "logical_bytes": -64,
+        "roofline": {"estimated_time_us": pytest.approx(-0.00064)},
+    }
     assert optimized["graph_outputs"] == ["output"]
     assert [item["name"] for item in optimized["ops"]] == ["matmul", "add_bias", "relu"]
 
@@ -155,6 +162,14 @@ def test_dead_operations_do_not_contribute_to_optimized_totals() -> None:
     assert report["optimized"]["totals"]["flops"] == 2
     assert report["optimized"]["totals"]["bytes_read"] + report["optimized"]["totals"]["bytes_written"] == 16
     assert [item["name"] for item in report["optimized"]["ops"]] == ["live"]
+    assert report["optimized"]["bytes_avoided"] == 0
+    assert report["cost_delta"] == {
+        "flops": -2,
+        "bytes_read": -16,
+        "bytes_written": -8,
+        "logical_bytes": -24,
+        "roofline": {"estimated_time_us": None},
+    }
 
 
 def test_optimized_no_target_keeps_roofline_null() -> None:
@@ -163,6 +178,7 @@ def test_optimized_no_target_keeps_roofline_null() -> None:
     assert report["baseline"]["totals"]["roofline"] is None
     assert report["optimized"]["totals"]["roofline"] is None
     assert all(item["roofline"] is None for item in report["optimized"]["ops"])
+    assert report["cost_delta"]["roofline"]["estimated_time_us"] is None
 
 
 def test_chained_fusions_do_not_double_count_intermediates() -> None:
@@ -207,6 +223,11 @@ def test_optimize_cli_is_deterministic_and_default_shape_is_unchanged(tmp_path: 
     assert first.stdout == second.stdout
     optimized_report = json.loads(first.stdout)
     assert optimized_report["optimized"]["bytes_avoided"] == 64
+    assert optimized_report["cost_delta"]["flops"] == 0
+    assert optimized_report["cost_delta"]["bytes_read"] == -32
+    assert optimized_report["cost_delta"]["bytes_written"] == -32
+    assert optimized_report["cost_delta"]["logical_bytes"] == -64
+    assert optimized_report["cost_delta"]["roofline"]["estimated_time_us"] == pytest.approx(-0.00064)
 
     default = subprocess.run(
         [sys.executable, "-m", "cost_model", str(graph_path)],
@@ -225,3 +246,4 @@ def test_analyze_graph_optimize_keyword_is_an_opt_in_api() -> None:
     report = analyze_graph(EXAMPLE_GRAPH, optimize=True)
 
     assert report["optimized"]["bytes_avoided"] == 64
+    assert report["cost_delta"]["logical_bytes"] == -64
