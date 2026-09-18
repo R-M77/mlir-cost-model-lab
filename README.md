@@ -22,7 +22,7 @@ The package under `src/cost_model` is split into five small layers:
 - `parser.py` — JSON schema validation, value lookup, and static shape inference.
 - `estimator.py` — FLOP, byte-traffic, arithmetic-intensity, roofline, and baseline fusion calculations.
 - `optimizer.py` — opt-in liveness-aware elementwise fusion planning and before/after reporting.
-- `cli.py` / `__main__.py` — stable `python -m cost_model` interface and readable JSON output.
+- `cli.py` / `__main__.py` — stable `python -m cost_model` interface, batch benchmark mode, and readable JSON output.
 
 The parser processes operations in source order, so an operation can only use an input or an earlier result. Elementwise `add` and `mul` use trailing-dimension broadcasting; `matmul` is rank-2 only. An optional validated target is carried with the graph. The estimator preserves operation order and emits JSON-friendly integer counts plus floating-point intensity and roofline values.
 
@@ -45,6 +45,44 @@ Request the opt-in optimization report (the unfused baseline remains embedded fo
 ```bash
 PYTHONPATH=src python -m cost_model --optimize examples/matmul_bias_relu.json
 ```
+
+Run several graph files as one deterministic batch. The `--benchmark` file is a non-empty JSON array. Each item can be a graph path string, or an object with an explicit case name and graph path:
+
+```json
+[
+  "examples/matmul_bias_relu.json",
+  {"name": "named_case", "path": "examples/matmul_bias_relu.json"}
+]
+```
+
+Graph paths are resolved relative to the benchmark JSON file, and a path-only case uses the graph's own `name`. Emit one-line JSON for scripts with:
+
+```bash
+PYTHONPATH=src python -m cost_model --benchmark benchmark.json --compact
+```
+
+Batch output keeps each report under `cases[*].report` and adds an aggregate `summary`:
+
+```json
+{
+  "cases": [
+    {"name": "matmul_bias_relu", "path": "examples/matmul_bias_relu.json", "report": {"...": "..."}}
+  ],
+  "summary": {
+    "case_count": 1,
+    "totals": {
+      "flops": 64,
+      "bytes_read": 152,
+      "bytes_written": 96,
+      "logical_bytes": 248,
+      "arithmetic_intensity": 0.25806451612903225,
+      "estimated_time_us": 0.00248
+    }
+  }
+}
+```
+
+The summary totals use each case's normal report, or its `optimized.totals` when `--optimize` is also supplied. `estimated_time_us` is the sum of per-case roofline times when every case has a target; it is `null` for a batch with any target-less case. A positional graph path and `--benchmark` are mutually exclusive; omitting both is an error. Existing single-graph commands and their JSON shape are unchanged.
 
 Install the project and test extras in a virtual environment when desired:
 
@@ -128,4 +166,4 @@ The legality scope is intentionally explicit: this IR has no side-effect, layout
 
 ## Development
 
-The project has no runtime dependencies. Focused tests cover exact estimates, target-aware compute- and memory-bound roofline cases, target validation, no-target null behavior, JSON file loading, default and optimized CLI behavior, optimizer legality/liveness, and invalid schema/reference/shape inputs. CI runs the test suite on Python 3.11 and 3.12.
+The project has no runtime dependencies. Focused tests cover exact estimates, target-aware compute- and memory-bound roofline cases, target validation, no-target null behavior, JSON file loading, default and optimized CLI behavior, deterministic batch benchmark output, optimizer legality/liveness, and invalid schema/reference/shape inputs. CI runs the test suite on Python 3.11 and 3.12.
