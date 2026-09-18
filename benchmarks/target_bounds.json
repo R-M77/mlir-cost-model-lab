@@ -1,0 +1,4 @@
+[
+  "fixtures/compute_bound_matmul.json",
+  "fixtures/memory_bound_relu.json"
+]

@@ -1,0 +1,19 @@
+{
+  "name": "memory_bound_relu",
+  "target": {
+    "peak_compute_gflops": 1000.0,
+    "memory_bandwidth_gbps": 100.0
+  },
+  "inputs": {
+    "input": {"shape": [1024, 1024], "dtype": "f32"}
+  },
+  "ops": [
+    {
+      "name": "relu",
+      "op": "relu",
+      "inputs": ["input"],
+      "outputs": ["output"]
+    }
+  ],
+  "outputs": ["output"]
+}

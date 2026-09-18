@@ -8,6 +8,8 @@ from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+TARGET_BOUNDS_BENCHMARK = REPO_ROOT / "benchmarks" / "target_bounds.json"
+TARGET_BOUNDS_EXPECTED = REPO_ROOT / "benchmarks" / "target_bounds.expected.json"
 
 
 def _run_cli(*args: str) -> subprocess.CompletedProcess[str]:
@@ -134,6 +136,38 @@ def test_benchmark_optimize_aggregates_optimized_totals(tmp_path: Path) -> None:
         "logical_bytes": 24,
         "arithmetic_intensity": 4 / 24,
         "estimated_time_us": None,
+    }
+
+
+def test_target_bound_fixture_has_stable_classification_and_aggregate() -> None:
+    expected = TARGET_BOUNDS_EXPECTED.read_text(encoding="utf-8")
+
+    first = _run_cli("--benchmark", str(TARGET_BOUNDS_BENCHMARK), "--compact")
+    second = _run_cli("--benchmark", str(TARGET_BOUNDS_BENCHMARK), "--compact")
+
+    assert first.returncode == second.returncode == 0
+    assert first.stderr == second.stderr == ""
+    assert first.stdout == second.stdout == expected
+
+    payload = json.loads(first.stdout)
+    assert [case["name"] for case in payload["cases"]] == [
+        "compute_bound_matmul",
+        "memory_bound_relu",
+    ]
+    assert [
+        case["report"]["totals"]["roofline"]["bound"]
+        for case in payload["cases"]
+    ] == ["compute", "memory"]
+    assert payload["summary"] == {
+        "case_count": 2,
+        "totals": {
+            "flops": 1_572_864,
+            "bytes_read": 4_227_072,
+            "bytes_written": 4_210_688,
+            "logical_bytes": 8_437_760,
+            "arithmetic_intensity": 1_572_864 / 8_437_760,
+            "estimated_time_us": 84.410368,
+        },
     }
 
 

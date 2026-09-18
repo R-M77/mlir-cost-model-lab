@@ -84,6 +84,18 @@ Batch output keeps each report under `cases[*].report` and adds an aggregate `su
 
 The summary totals use each case's normal report, or its `optimized.totals` when `--optimize` is also supplied. `estimated_time_us` is the sum of per-case roofline times when every case has a target; it is `null` for a batch with any target-less case. A positional graph path and `--benchmark` are mutually exclusive; omitting both is an error. Existing single-graph commands and their JSON shape are unchanged.
 
+The target-bound regression fixture runs a compute-heavy matmul and a
+memory-heavy ReLU against the same idealized target:
+
+```bash
+PYTHONPATH=src python -m cost_model --benchmark benchmarks/target_bounds.json --compact
+```
+
+The first case must classify as `compute`-bound and the second as `memory`-bound.
+`benchmarks/target_bounds.expected.json` stores the deterministic compact batch
+output; CI compares a fresh run with that file so classification, per-case
+reports, and aggregate totals cannot drift silently.
+
 Install the project and test extras in a virtual environment when desired:
 
 ```bash

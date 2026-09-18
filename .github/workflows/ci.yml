@@ -19,3 +19,7 @@ jobs:
         run: python -m pip install --upgrade pip && python -m pip install -e '.[test]'
       - name: Run tests
         run: python -m pytest -q
+      - name: Run target-bound benchmark regression
+        run: |
+          python -m cost_model --benchmark benchmarks/target_bounds.json --compact > /tmp/target_bounds.actual.json
+          diff -u benchmarks/target_bounds.expected.json /tmp/target_bounds.actual.json
