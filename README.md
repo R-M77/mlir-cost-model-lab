@@ -22,7 +22,7 @@ The package under `src/cost_model` is split into five small layers:
 - `parser.py` — JSON schema validation, value lookup, and static shape inference.
 - `estimator.py` — FLOP, byte-traffic, arithmetic-intensity, roofline, and baseline fusion calculations.
 - `optimizer.py` — opt-in liveness-aware elementwise fusion planning and before/after reporting.
-- `cli.py` / `__main__.py` — stable `python -m cost_model` interface, batch benchmark mode, and readable JSON output.
+- `cli.py` / `__main__.py` — stable `python -m cost_model` interface, batch benchmark mode, deterministic budget gate, and readable JSON output.
 
 The parser processes operations in source order, so an operation can only use an input or an earlier result. Elementwise `add` and `mul` use trailing-dimension broadcasting; `matmul` is rank-2 only. An optional validated target is carried with the graph. The estimator preserves operation order and emits JSON-friendly integer counts plus floating-point intensity and roofline values.
 
@@ -96,6 +96,47 @@ The first case must classify as `compute`-bound and the second as `memory`-bound
 output; CI compares a fresh run with that file so classification, per-case
 reports, and aggregate totals cannot drift silently.
 
+Use the opt-in benchmark regression gate with an absolute upper-bound budget:
+
+```bash
+PYTHONPATH=src python -m cost_model \
+  --benchmark benchmarks/target_bounds.json \
+  --budget benchmarks/target_bounds.budget.json \
+  --compact
+```
+
+The budget JSON requires a non-empty `aggregate` object and accepts optional
+per-case limits keyed by the case name:
+
+```json
+{
+  "aggregate": {
+    "flops": 1572864,
+    "logical_bytes": 8437760,
+    "estimated_time_us": 84.410368
+  },
+  "cases": {
+    "compute_bound_matmul": {
+      "flops": 524288,
+      "logical_bytes": 49152,
+      "estimated_time_us": 0.524288
+    }
+  }
+}
+```
+
+Supported metrics are `flops`, `logical_bytes`, and `estimated_time_us`. Every
+limit is an absolute upper bound: the gate fails only when `actual > limit`, so
+equality passes. A metric may be omitted when it is not applicable. In
+particular, `estimated_time_us` is unavailable for a target-less case (and for
+a batch containing one), so requesting that limit fails closed with a clear
+error instead of inventing a value. Unknown fields, unsupported metrics,
+non-finite values, missing aggregate limits, and unknown case names are errors.
+On a violation the command keeps the normal report on stdout, emits a
+single-line `error: {...}` JSON diagnostic on stderr, and exits with status `2`.
+Without `--budget`, existing single-graph and batch commands and their JSON
+output are unchanged.
+
 Install the project and test extras in a virtual environment when desired:
 
 ```bash
@@ -103,7 +144,7 @@ python -m pip install -e '.[test]'
 pytest
 ```
 
-The command exits with status `2` and prints a concise `error:` message for invalid JSON or invalid graph input.
+The command exits with status `2` and prints a concise `error:` message for invalid JSON, invalid graph input, invalid budget input, or a budget violation.
 
 ## Input format
 

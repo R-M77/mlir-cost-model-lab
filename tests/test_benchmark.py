@@ -10,6 +10,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 TARGET_BOUNDS_BENCHMARK = REPO_ROOT / "benchmarks" / "target_bounds.json"
 TARGET_BOUNDS_EXPECTED = REPO_ROOT / "benchmarks" / "target_bounds.expected.json"
+TARGET_BOUNDS_BUDGET = REPO_ROOT / "benchmarks" / "target_bounds.budget.json"
 
 
 def _run_cli(*args: str) -> subprocess.CompletedProcess[str]:
@@ -180,3 +181,170 @@ def test_invalid_benchmark_input_returns_cli_error(tmp_path: Path) -> None:
     assert result.returncode == 2
     assert result.stdout == ""
     assert "error: benchmark JSON must contain an array" in result.stderr
+
+
+def _target_bounds_budget() -> dict[str, object]:
+    return {
+        "aggregate": {
+            "flops": 1_572_864,
+            "logical_bytes": 8_437_760,
+            "estimated_time_us": 84.410368,
+        },
+        "cases": {
+            "compute_bound_matmul": {
+                "flops": 524_288,
+                "logical_bytes": 49_152,
+                "estimated_time_us": 0.524288,
+            },
+            "memory_bound_relu": {
+                "flops": 1_048_576,
+                "logical_bytes": 8_388_608,
+                "estimated_time_us": 83.88608,
+            },
+        },
+    }
+
+
+def test_benchmark_budget_pass_preserves_report_and_is_deterministic() -> None:
+    baseline = _run_cli("--benchmark", str(TARGET_BOUNDS_BENCHMARK), "--compact")
+    first = _run_cli(
+        "--benchmark",
+        str(TARGET_BOUNDS_BENCHMARK),
+        "--budget",
+        str(TARGET_BOUNDS_BUDGET),
+        "--compact",
+    )
+    second = _run_cli(
+        "--benchmark",
+        str(TARGET_BOUNDS_BENCHMARK),
+        "--budget",
+        str(TARGET_BOUNDS_BUDGET),
+        "--compact",
+    )
+
+    assert baseline.returncode == first.returncode == second.returncode == 0
+    assert baseline.stderr == first.stderr == second.stderr == ""
+    assert first.stdout == second.stdout == baseline.stdout
+
+
+def test_benchmark_budget_violation_returns_report_and_json_diagnostic(
+    tmp_path: Path,
+) -> None:
+    budget = _target_bounds_budget()
+    budget["aggregate"]["flops"] = 1_572_863  # type: ignore[index]
+    budget_path = tmp_path / "budget.json"
+    budget_path.write_text(json.dumps(budget), encoding="utf-8")
+
+    baseline = _run_cli("--benchmark", str(TARGET_BOUNDS_BENCHMARK), "--compact")
+    result = _run_cli(
+        "--benchmark",
+        str(TARGET_BOUNDS_BENCHMARK),
+        "--budget",
+        str(budget_path),
+        "--compact",
+    )
+
+    assert baseline.returncode == 0
+    assert result.returncode == 2
+    assert result.stdout == baseline.stdout
+    assert json.loads(result.stderr.removeprefix("error: ")) == {
+        "error": "benchmark budget exceeded",
+        "violations": [
+            {
+                "actual": 1_572_864,
+                "limit": 1_572_863,
+                "metric": "flops",
+                "scope": "aggregate",
+            }
+        ],
+    }
+
+
+def test_per_case_budget_violation_is_reported(tmp_path: Path) -> None:
+    budget_path = tmp_path / "budget.json"
+    budget_path.write_text(
+        json.dumps(
+            {
+                "aggregate": {"flops": 1_572_864},
+                "cases": {"memory_bound_relu": {"flops": 1_048_575}},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = _run_cli(
+        "--benchmark",
+        str(TARGET_BOUNDS_BENCHMARK),
+        "--budget",
+        str(budget_path),
+        "--compact",
+    )
+
+    assert result.returncode == 2
+    assert json.loads(result.stderr.removeprefix("error: "))["violations"] == [
+        {
+            "actual": 1_048_576,
+            "limit": 1_048_575,
+            "metric": "flops",
+            "scope": "case",
+        }
+    ]
+
+
+def test_invalid_benchmark_budget_schema_fails_closed(tmp_path: Path) -> None:
+    budget_path = tmp_path / "budget.json"
+    budget_path.write_text(
+        json.dumps({"aggregate": {"flops": "not-a-number"}}),
+        encoding="utf-8",
+    )
+
+    result = _run_cli(
+        "--benchmark",
+        str(TARGET_BOUNDS_BENCHMARK),
+        "--budget",
+        str(budget_path),
+    )
+
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert "error: invalid budget aggregate.flops must be a finite non-negative number" in result.stderr
+
+
+def test_targetless_estimated_time_is_optional_but_cannot_be_checked(
+    tmp_path: Path,
+) -> None:
+    graph_path = tmp_path / "graph.json"
+    graph_path.write_text(json.dumps(_relu_graph("targetless")), encoding="utf-8")
+    benchmark_path = tmp_path / "benchmark.json"
+    benchmark_path.write_text(json.dumps(["graph.json"]), encoding="utf-8")
+
+    without_time = tmp_path / "without_time.json"
+    without_time.write_text(
+        json.dumps({"aggregate": {"flops": 2, "logical_bytes": 16}}),
+        encoding="utf-8",
+    )
+    allowed = _run_cli(
+        "--benchmark",
+        str(benchmark_path),
+        "--budget",
+        str(without_time),
+        "--compact",
+    )
+    assert allowed.returncode == 0
+    assert allowed.stderr == ""
+    assert json.loads(allowed.stdout)["summary"]["totals"]["estimated_time_us"] is None
+
+    with_time = tmp_path / "with_time.json"
+    with_time.write_text(
+        json.dumps({"aggregate": {"estimated_time_us": 1.0}}),
+        encoding="utf-8",
+    )
+    rejected = _run_cli(
+        "--benchmark",
+        str(benchmark_path),
+        "--budget",
+        str(with_time),
+    )
+    assert rejected.returncode == 2
+    assert rejected.stdout == ""
+    assert "error: budget aggregate.estimated_time_us is unavailable" in rejected.stderr

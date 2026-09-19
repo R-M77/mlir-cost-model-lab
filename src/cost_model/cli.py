@@ -6,6 +6,7 @@ import argparse
 import json
 import sys
 from collections.abc import Mapping
+from math import isfinite
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -115,6 +116,193 @@ def _benchmark_report(benchmark_path: Path, *, optimize: bool) -> dict[str, Any]
     }
 
 
+_BUDGET_METRICS = ("flops", "logical_bytes", "estimated_time_us")
+
+
+def _parse_budget_metrics(value: object, label: str) -> dict[str, int | float]:
+    if not isinstance(value, Mapping):
+        raise GraphValidationError(f"invalid budget {label} must be an object")
+    unknown_metrics = sorted(set(value) - set(_BUDGET_METRICS))
+    if unknown_metrics:
+        names = ", ".join(repr(metric) for metric in unknown_metrics)
+        raise GraphValidationError(f"invalid budget {label} has unsupported metric(s): {names}")
+    if not value:
+        raise GraphValidationError(f"invalid budget {label} must define at least one metric")
+
+    metrics: dict[str, int | float] = {}
+    for metric in _BUDGET_METRICS:
+        if metric not in value:
+            continue
+        limit = value[metric]
+        if (
+            isinstance(limit, bool)
+            or not isinstance(limit, (int, float))
+            or not isfinite(limit)
+            or limit < 0
+        ):
+            raise GraphValidationError(
+                f"invalid budget {label}.{metric} must be a finite non-negative number"
+            )
+        metrics[metric] = limit
+    return metrics
+
+
+def _load_budget(budget_path: Path) -> dict[str, Any]:
+    try:
+        payload = json.loads(budget_path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise GraphValidationError(
+            f"invalid budget {budget_path}: could not read file: {exc}"
+        ) from exc
+    except json.JSONDecodeError as exc:
+        raise GraphValidationError(
+            f"invalid budget JSON: {exc.msg} at line {exc.lineno} column {exc.colno}"
+        ) from exc
+
+    if not isinstance(payload, Mapping):
+        raise GraphValidationError("invalid budget must contain an object")
+    allowed_keys = {"aggregate", "cases"}
+    unknown_keys = sorted(set(payload) - allowed_keys)
+    if unknown_keys:
+        names = ", ".join(repr(key) for key in unknown_keys)
+        raise GraphValidationError(f"invalid budget has unsupported field(s): {names}")
+    if "aggregate" not in payload:
+        raise GraphValidationError("invalid budget requires an aggregate object")
+
+    aggregate = _parse_budget_metrics(payload["aggregate"], "aggregate")
+    raw_cases = payload.get("cases", {})
+    if not isinstance(raw_cases, Mapping):
+        raise GraphValidationError("invalid budget cases must be an object")
+
+    cases: dict[str, dict[str, int | float]] = {}
+    for case_name, limits in raw_cases.items():
+        if not isinstance(case_name, str) or not case_name.strip():
+            raise GraphValidationError("invalid budget case names must be non-empty strings")
+        cases[case_name] = _parse_budget_metrics(limits, f"cases[{case_name!r}]")
+    return {"aggregate": aggregate, "cases": cases}
+
+
+def _selected_case_totals(
+    case_report: Mapping[str, Any], *, optimize: bool, label: str
+) -> Mapping[str, Any]:
+    report: object = case_report.get("optimized") if optimize else case_report
+    if not isinstance(report, Mapping) or not isinstance(report.get("totals"), Mapping):
+        raise GraphValidationError(f"budget {label} totals are missing from the benchmark report")
+    return report["totals"]
+
+
+def _metric_value(totals: Mapping[str, Any], metric: str, label: str) -> int | float:
+    actual: object
+    if metric == "logical_bytes":
+        actual = totals.get("logical_bytes")
+        if actual is None:
+            bytes_read = totals.get("bytes_read")
+            bytes_written = totals.get("bytes_written")
+            if (
+                isinstance(bytes_read, bool)
+                or not isinstance(bytes_read, (int, float))
+                or isinstance(bytes_written, bool)
+                or not isinstance(bytes_written, (int, float))
+            ):
+                actual = None
+            else:
+                actual = bytes_read + bytes_written
+    elif metric == "estimated_time_us" and "estimated_time_us" not in totals:
+        roofline = totals.get("roofline")
+        actual = roofline.get("estimated_time_us") if isinstance(roofline, Mapping) else None
+    else:
+        actual = totals.get(metric)
+
+    if (
+        actual is None
+        or isinstance(actual, bool)
+        or not isinstance(actual, (int, float))
+        or not isfinite(actual)
+    ):
+        raise GraphValidationError(f"budget {label}.{metric} is unavailable in the benchmark report")
+    return actual
+
+
+def _check_budget(
+    report: Mapping[str, Any], budget: Mapping[str, Any], *, optimize: bool
+) -> list[dict[str, Any]]:
+    summary = report.get("summary")
+    if not isinstance(summary, Mapping) or not isinstance(summary.get("totals"), Mapping):
+        raise GraphValidationError("budget summary totals are missing from the benchmark report")
+
+    violations: list[dict[str, Any]] = []
+
+    def check_scope(
+        scope: str,
+        limits: Mapping[str, int | float],
+        totals: Mapping[str, Any],
+        label: str,
+    ) -> None:
+        for metric in _BUDGET_METRICS:
+            if metric not in limits:
+                continue
+            actual = _metric_value(totals, metric, label)
+            limit = limits[metric]
+            if actual > limit:
+                violations.append(
+                    {
+                        "actual": actual,
+                        "limit": limit,
+                        "metric": metric,
+                        "scope": scope,
+                    }
+                )
+
+    check_scope(
+        "aggregate",
+        budget["aggregate"],
+        summary["totals"],
+        "aggregate",
+    )
+
+    raw_case_limits = budget["cases"]
+    if not raw_case_limits:
+        return violations
+    raw_cases = report.get("cases")
+    if not isinstance(raw_cases, list):
+        raise GraphValidationError("budget case reports are missing from the benchmark report")
+
+    for case_name in sorted(raw_case_limits):
+        matching_cases = [
+            case
+            for case in raw_cases
+            if isinstance(case, Mapping) and case.get("name") == case_name
+        ]
+        if len(matching_cases) != 1:
+            raise GraphValidationError(
+                f"invalid budget case {case_name!r} must match exactly one benchmark case"
+            )
+        case_report = matching_cases[0].get("report")
+        if not isinstance(case_report, Mapping):
+            raise GraphValidationError(
+                f"budget case {case_name!r} report is missing from the benchmark output"
+            )
+        check_scope(
+            "case",
+            raw_case_limits[case_name],
+            _selected_case_totals(
+                case_report,
+                optimize=optimize,
+                label=f"cases[{case_name!r}]",
+            ),
+            f"cases[{case_name!r}]",
+        )
+    return violations
+
+
+def _budget_diagnostic(violations: list[dict[str, Any]]) -> str:
+    return json.dumps(
+        {"error": "benchmark budget exceeded", "violations": violations},
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
@@ -133,6 +321,12 @@ def _build_parser() -> argparse.ArgumentParser:
         type=Path,
         metavar="JSON",
         help="run a batch from a JSON array of graph paths or named cases",
+    )
+    parser.add_argument(
+        "--budget",
+        type=Path,
+        metavar="JSON",
+        help="check benchmark aggregate and optional per-case metric budgets",
     )
     parser.add_argument(
         "--compact",
@@ -154,10 +348,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error("a graph path or --benchmark JSON is required")
     if args.graph is not None and args.benchmark is not None:
         parser.error("graph path and --benchmark JSON are mutually exclusive")
+    if args.budget is not None and args.benchmark is None:
+        parser.error("--budget requires --benchmark JSON")
 
+    violations: list[dict[str, Any]] = []
     try:
+        budget = _load_budget(args.budget) if args.budget is not None else None
         if args.benchmark is not None:
             report = _benchmark_report(args.benchmark, optimize=args.optimize)
+            if budget is not None:
+                violations = _check_budget(report, budget, optimize=args.optimize)
         else:
             assert args.graph is not None
             graph = load_graph(args.graph)
@@ -170,4 +370,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(json.dumps(report, separators=(",", ":")))
     else:
         print(json.dumps(report, indent=2))
+    if violations:
+        print(f"error: {_budget_diagnostic(violations)}", file=sys.stderr)
+        return 2
     return 0

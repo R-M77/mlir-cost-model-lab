@@ -1,0 +1,19 @@
+{
+  "aggregate": {
+    "flops": 1572864,
+    "logical_bytes": 8437760,
+    "estimated_time_us": 84.410368
+  },
+  "cases": {
+    "compute_bound_matmul": {
+      "flops": 524288,
+      "logical_bytes": 49152,
+      "estimated_time_us": 0.524288
+    },
+    "memory_bound_relu": {
+      "flops": 1048576,
+      "logical_bytes": 8388608,
+      "estimated_time_us": 83.88608
+    }
+  }
+}

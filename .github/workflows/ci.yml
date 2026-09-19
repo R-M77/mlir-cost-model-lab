@@ -23,3 +23,5 @@ jobs:
         run: |
           python -m cost_model --benchmark benchmarks/target_bounds.json --compact > /tmp/target_bounds.actual.json
           diff -u benchmarks/target_bounds.expected.json /tmp/target_bounds.actual.json
+      - name: Run benchmark budget gate
+        run: python -m cost_model --benchmark benchmarks/target_bounds.json --budget benchmarks/target_bounds.budget.json --compact > /tmp/target_bounds.budget.actual.json
