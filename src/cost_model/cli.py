@@ -63,6 +63,7 @@ def _load_benchmark_cases(
 
 def _benchmark_report(benchmark_path: Path, *, optimize: bool) -> dict[str, Any]:
     cases: list[dict[str, Any]] = []
+    seen_case_names: set[str] = set()
     total_flops = 0
     total_bytes_read = 0
     total_bytes_written = 0
@@ -76,9 +77,15 @@ def _benchmark_report(benchmark_path: Path, *, optimize: bool) -> dict[str, Any]
             raise GraphValidationError(f"benchmark case {label!r}: {exc}") from exc
 
         report = optimize_graph(graph) if optimize else estimate_graph(graph)
+        effective_name = case_name or report["graph"]
+        if effective_name in seen_case_names:
+            raise GraphValidationError(
+                f"benchmark case name {effective_name!r} must be unique"
+            )
+        seen_case_names.add(effective_name)
         cases.append(
             {
-                "name": case_name or report["graph"],
+                "name": effective_name,
                 "path": raw_graph_path,
                 "report": report,
             }

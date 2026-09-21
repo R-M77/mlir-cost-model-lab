@@ -55,7 +55,7 @@ Run several graph files as one deterministic batch. The `--benchmark` file is a 
 ]
 ```
 
-Graph paths are resolved relative to the benchmark JSON file, and a path-only case uses the graph's own `name`. Emit one-line JSON for scripts with:
+Graph paths are resolved relative to the benchmark JSON file, and a path-only case uses the graph's own `name`. Effective case names must be unique across the batch; duplicate names are rejected before any report is emitted. Emit one-line JSON for scripts with:
 
 ```bash
 PYTHONPATH=src python -m cost_model --benchmark benchmark.json --compact

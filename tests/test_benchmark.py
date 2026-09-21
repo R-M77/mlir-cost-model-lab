@@ -183,6 +183,29 @@ def test_invalid_benchmark_input_returns_cli_error(tmp_path: Path) -> None:
     assert "error: benchmark JSON must contain an array" in result.stderr
 
 
+def test_benchmark_rejects_duplicate_effective_case_names(tmp_path: Path) -> None:
+    graph_path = tmp_path / "graph.json"
+    graph_path.write_text(json.dumps(_relu_graph("same_case")), encoding="utf-8")
+
+    for benchmark in (
+        ["graph.json", "graph.json"],
+        [
+            {"name": "same_case", "path": "graph.json"},
+            {"name": "same_case", "path": "graph.json"},
+        ],
+    ):
+        benchmark_path = tmp_path / "benchmark.json"
+        benchmark_path.write_text(json.dumps(benchmark), encoding="utf-8")
+
+        result = _run_cli("--benchmark", str(benchmark_path), "--compact")
+
+        assert result.returncode == 2
+        assert result.stdout == ""
+        assert result.stderr.strip() == (
+            "error: benchmark case name 'same_case' must be unique"
+        )
+
+
 def _target_bounds_budget() -> dict[str, object]:
     return {
         "aggregate": {
