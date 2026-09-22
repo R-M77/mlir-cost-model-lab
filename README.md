@@ -61,6 +61,18 @@ Graph paths are resolved relative to the benchmark JSON file, and a path-only ca
 PYTHONPATH=src python -m cost_model --benchmark benchmark.json --compact
 ```
 
+Select one or more effective case names with repeatable `--case` options. Selection preserves the benchmark file's original order and is applied only after every case has been loaded and validated, so invalid or duplicate unselected cases still fail the command:
+
+```bash
+PYTHONPATH=src python -m cost_model \
+  --benchmark benchmark.json \
+  --case named_case \
+  --case matmul_bias_relu \
+  --compact
+```
+
+`--case` is valid only with `--benchmark`; names must match exactly, and an unknown name is an error. When `--budget` is also supplied, aggregate and per-case limits are checked against the selected report, so budget case entries must name selected cases.
+
 Batch output keeps each report under `cases[*].report` and adds an aggregate `summary`:
 
 ```json

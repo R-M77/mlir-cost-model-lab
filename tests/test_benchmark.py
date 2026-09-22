@@ -140,6 +140,102 @@ def test_benchmark_optimize_aggregates_optimized_totals(tmp_path: Path) -> None:
     }
 
 
+def test_benchmark_case_selection_is_repeatable_and_preserves_original_order() -> None:
+    result = _run_cli(
+        "--benchmark",
+        str(TARGET_BOUNDS_BENCHMARK),
+        "--case",
+        "memory_bound_relu",
+        "--case",
+        "compute_bound_matmul",
+        "--compact",
+    )
+
+    assert result.returncode == 0
+    assert result.stderr == ""
+    payload = json.loads(result.stdout)
+    assert [case["name"] for case in payload["cases"]] == [
+        "compute_bound_matmul",
+        "memory_bound_relu",
+    ]
+    assert payload["summary"]["case_count"] == 2
+    assert payload["summary"]["totals"]["flops"] == 1_572_864
+
+
+def test_benchmark_case_selection_recomputes_summary_and_budget(tmp_path: Path) -> None:
+    budget_path = tmp_path / "budget.json"
+    budget_path.write_text(
+        json.dumps(
+            {
+                "aggregate": {
+                    "flops": 1_048_576,
+                    "logical_bytes": 8_388_608,
+                    "estimated_time_us": 83.88608,
+                },
+                "cases": {
+                    "memory_bound_relu": {
+                        "flops": 1_048_576,
+                        "logical_bytes": 8_388_608,
+                        "estimated_time_us": 83.88608,
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = _run_cli(
+        "--benchmark",
+        str(TARGET_BOUNDS_BENCHMARK),
+        "--case",
+        "memory_bound_relu",
+        "--budget",
+        str(budget_path),
+        "--compact",
+    )
+
+    assert result.returncode == 0
+    assert result.stderr == ""
+    payload = json.loads(result.stdout)
+    assert [case["name"] for case in payload["cases"]] == ["memory_bound_relu"]
+    assert payload["summary"] == {
+        "case_count": 1,
+        "totals": {
+            "flops": 1_048_576,
+            "bytes_read": 4_194_304,
+            "bytes_written": 4_194_304,
+            "logical_bytes": 8_388_608,
+            "arithmetic_intensity": 0.125,
+            "estimated_time_us": 83.88608,
+        },
+    }
+
+
+def test_benchmark_case_selection_rejects_unknown_name() -> None:
+    result = _run_cli(
+        "--benchmark",
+        str(TARGET_BOUNDS_BENCHMARK),
+        "--case",
+        "missing_case",
+        "--compact",
+    )
+
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert result.stderr.strip() == "error: unknown benchmark case name 'missing_case'"
+
+
+def test_case_selection_requires_benchmark(tmp_path: Path) -> None:
+    graph_path = tmp_path / "graph.json"
+    graph_path.write_text(json.dumps(_relu_graph("single_case")), encoding="utf-8")
+
+    result = _run_cli("--case", "single_case", str(graph_path))
+
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert "error: --case requires --benchmark JSON" in result.stderr
+
+
 def test_target_bound_fixture_has_stable_classification_and_aggregate() -> None:
     expected = TARGET_BOUNDS_EXPECTED.read_text(encoding="utf-8")
 
@@ -204,6 +300,38 @@ def test_benchmark_rejects_duplicate_effective_case_names(tmp_path: Path) -> Non
         assert result.stderr.strip() == (
             "error: benchmark case name 'same_case' must be unique"
         )
+
+
+def test_benchmark_case_selection_does_not_skip_duplicate_validation(
+    tmp_path: Path,
+) -> None:
+    graph_path = tmp_path / "graph.json"
+    graph_path.write_text(json.dumps(_relu_graph("same_case")), encoding="utf-8")
+    benchmark_path = tmp_path / "benchmark.json"
+    benchmark_path.write_text(
+        json.dumps(
+            [
+                {"name": "selected_case", "path": "graph.json"},
+                {"name": "same_case", "path": "graph.json"},
+                {"name": "same_case", "path": "graph.json"},
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    result = _run_cli(
+        "--benchmark",
+        str(benchmark_path),
+        "--case",
+        "selected_case",
+        "--compact",
+    )
+
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert result.stderr.strip() == (
+        "error: benchmark case name 'same_case' must be unique"
+    )
 
 
 def _target_bounds_budget() -> dict[str, object]:

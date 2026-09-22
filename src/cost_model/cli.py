@@ -61,13 +61,14 @@ def _load_benchmark_cases(
     return cases
 
 
-def _benchmark_report(benchmark_path: Path, *, optimize: bool) -> dict[str, Any]:
+def _benchmark_report(
+    benchmark_path: Path,
+    *,
+    optimize: bool,
+    selected_case_names: Sequence[str] | None = None,
+) -> dict[str, Any]:
     cases: list[dict[str, Any]] = []
     seen_case_names: set[str] = set()
-    total_flops = 0
-    total_bytes_read = 0
-    total_bytes_written = 0
-    estimated_times: list[float | None] = []
 
     for case_name, raw_graph_path, graph_path in _load_benchmark_cases(benchmark_path):
         try:
@@ -90,6 +91,28 @@ def _benchmark_report(benchmark_path: Path, *, optimize: bool) -> dict[str, Any]
                 "report": report,
             }
         )
+
+    if selected_case_names:
+        requested_case_names = set(selected_case_names)
+        available_case_names = {case["name"] for case in cases}
+        unknown_case_names = sorted(requested_case_names - available_case_names)
+        if unknown_case_names:
+            if len(unknown_case_names) == 1:
+                raise GraphValidationError(
+                    f"unknown benchmark case name {unknown_case_names[0]!r}"
+                )
+            names = ", ".join(repr(name) for name in unknown_case_names)
+            raise GraphValidationError(f"unknown benchmark case names: {names}")
+        cases = [
+            case for case in cases if case["name"] in requested_case_names
+        ]
+
+    total_flops = 0
+    total_bytes_read = 0
+    total_bytes_written = 0
+    estimated_times: list[float | None] = []
+    for case in cases:
+        report = case["report"]
         totals = report["optimized"]["totals"] if optimize else report["totals"]
         total_flops += totals["flops"]
         total_bytes_read += totals["bytes_read"]
@@ -330,6 +353,13 @@ def _build_parser() -> argparse.ArgumentParser:
         help="run a batch from a JSON array of graph paths or named cases",
     )
     parser.add_argument(
+        "--case",
+        dest="case_names",
+        action="append",
+        metavar="NAME",
+        help="select a benchmark case by effective name; repeat to select multiple cases",
+    )
+    parser.add_argument(
         "--budget",
         type=Path,
         metavar="JSON",
@@ -351,6 +381,8 @@ def _build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
+    if args.case_names and args.benchmark is None:
+        parser.error("--case requires --benchmark JSON")
     if args.graph is None and args.benchmark is None:
         parser.error("a graph path or --benchmark JSON is required")
     if args.graph is not None and args.benchmark is not None:
@@ -362,7 +394,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         budget = _load_budget(args.budget) if args.budget is not None else None
         if args.benchmark is not None:
-            report = _benchmark_report(args.benchmark, optimize=args.optimize)
+            report = _benchmark_report(
+                args.benchmark,
+                optimize=args.optimize,
+                selected_case_names=args.case_names,
+            )
             if budget is not None:
                 violations = _check_budget(report, budget, optimize=args.optimize)
         else:
