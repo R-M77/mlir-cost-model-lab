@@ -1,0 +1,20 @@
+{
+  "name": "matmul_lowering",
+  "target": {
+    "peak_compute_gflops": 1000.0,
+    "memory_bandwidth_gbps": 100.0
+  },
+  "inputs": {
+    "lhs": {"shape": [2, 3], "dtype": "f32"},
+    "rhs": {"shape": [3, 4], "dtype": "f32"}
+  },
+  "ops": [
+    {
+      "name": "matmul",
+      "op": "matmul",
+      "inputs": ["lhs", "rhs"],
+      "outputs": ["output"]
+    }
+  ],
+  "outputs": ["output"]
+}

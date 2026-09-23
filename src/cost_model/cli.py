@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from .estimator import estimate_graph
+from .lowering import compare_matmul_lowering_graph
 from .optimizer import optimize_graph
 from .parser import GraphValidationError, load_graph
 
@@ -375,6 +376,11 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="emit an opt-in before/after liveness-aware optimization report",
     )
+    parser.add_argument(
+        "--lower-matmul",
+        action="store_true",
+        help="emit an opt-in before/after scalar matmul lowering report",
+    )
     return parser
 
 
@@ -383,6 +389,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.case_names and args.benchmark is None:
         parser.error("--case requires --benchmark JSON")
+    if args.lower_matmul and args.benchmark is not None:
+        parser.error("--lower-matmul requires a single graph path")
+    if args.lower_matmul and args.optimize:
+        parser.error("--lower-matmul cannot be combined with --optimize")
     if args.graph is None and args.benchmark is None:
         parser.error("a graph path or --benchmark JSON is required")
     if args.graph is not None and args.benchmark is not None:
@@ -404,7 +414,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         else:
             assert args.graph is not None
             graph = load_graph(args.graph)
-            report = optimize_graph(graph) if args.optimize else estimate_graph(graph)
+            if args.lower_matmul:
+                report = compare_matmul_lowering_graph(graph)
+            else:
+                report = optimize_graph(graph) if args.optimize else estimate_graph(graph)
     except GraphValidationError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2

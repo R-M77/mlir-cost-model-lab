@@ -16,12 +16,13 @@ Compiler and kernel decisions often need a quick first-order answer to questions
 
 ## Architecture
 
-The package under `src/cost_model` is split into five small layers:
+The package under `src/cost_model` is split into six small layers:
 
 - `models.py` — immutable tensor, operation, and graph data structures.
 - `parser.py` — JSON schema validation, value lookup, and static shape inference.
 - `estimator.py` — FLOP, byte-traffic, arithmetic-intensity, roofline, and baseline fusion calculations.
 - `optimizer.py` — opt-in liveness-aware elementwise fusion planning and before/after reporting.
+- `lowering.py` — an opt-in, target-independent scalar matmul lowering exercise and cost comparison.
 - `cli.py` / `__main__.py` — stable `python -m cost_model` interface, batch benchmark mode, deterministic budget gate, and readable JSON output.
 
 The parser processes operations in source order, so an operation can only use an input or an earlier result. Elementwise `add` and `mul` use trailing-dimension broadcasting; `matmul` is rank-2 only. An optional validated target is carried with the graph. The estimator preserves operation order and emits JSON-friendly integer counts plus floating-point intensity and roofline values.
@@ -44,6 +45,12 @@ Request the opt-in optimization report (the unfused baseline remains embedded fo
 
 ```bash
 PYTHONPATH=src python -m cost_model --optimize examples/matmul_bias_relu.json
+```
+
+Run the opt-in matmul-lowering exercise:
+
+```bash
+PYTHONPATH=src python -m cost_model --lower-matmul examples/matmul_lowering.json
 ```
 
 Run several graph files as one deterministic batch. The `--benchmark` file is a non-empty JSON array. Each item can be a graph path string, or an object with an explicit case name and graph path:
@@ -149,6 +156,27 @@ single-line `error: {...}` JSON diagnostic on stderr, and exits with status `2`.
 Without `--budget`, existing single-graph and batch commands and their JSON
 output are unchanged.
 
+## Matmul lowering exercise
+
+`--lower-matmul` and `compare_matmul_lowering(payload)` accept one graph containing
+exactly one rank-2 `matmul` whose result is the only graph output. They return a
+deterministic report with:
+
+- `before` — the normal `analyze_graph`-style cost report for the high-level `matmul`.
+- `after` — a cost report for a counted scalar-reduction representation with explicit `load`, `zero`, `fma`, and `store` operation templates.
+- `cost_delta` — signed after-minus-before changes for FLOPs, byte traffic, expanded operation count, and target roofline time.
+
+The representation is deliberately not MLIR and has no MLIR dependency. For
+`examples/matmul_lowering.json`, the high-level graph models 48 FLOPs and 104
+logical bytes. The lowered representation keeps 48 FLOPs but models 224
+logical bytes and 88 expanded scalar operations, because each reduction term
+reloads both scalar operands while the accumulator stays in a register. Its
+target-aware modeled time changes from `0.00104` to `0.00224` microseconds.
+This is a deterministic exercise in how lowering choices affect the model, not
+a runtime prediction; the assumptions are included in `after.representation`.
+The flag is single-graph only and cannot be combined with `--benchmark` or
+`--optimize`.
+
 Install the project and test extras in a virtual environment when desired:
 
 ```bash
@@ -227,8 +255,10 @@ The legality scope is intentionally explicit: this IR has no side-effect, layout
 - Every operation has exactly one output, and operations are already topologically ordered.
 - Byte traffic is logical tensor storage traffic. It does not model cache reuse, tiling, alignment, transfers, or aliasing; the roofline memory term uses the full logical read-plus-write total.
 - Default fusion reporting is an informational local opportunity heuristic; only the opt-in optimizer applies liveness and the narrower legality checks documented above.
+- The lowering exercise supports one standalone rank-2 `matmul`; it is a target-independent representation, not an MLIR parser or lowering pass.
+- Lowered scalar loads are counted once per reduction term with no cache reuse, tiling, vectorization, or operand reuse model, so the before/after delta is intentionally a simple exercise rather than a hardware estimate.
 - A supplied target provides idealized peak compute and bandwidth ceilings only. Roofline `estimated_time_us` values omit latency, utilization, vectorization, parallelism, overlap, and device-specific instruction costs, so they are lower-bound estimates rather than measured performance.
 
 ## Development
 
-The project has no runtime dependencies. Focused tests cover exact estimates, target-aware compute- and memory-bound roofline cases, target validation, no-target null behavior, JSON file loading, default and optimized CLI behavior, deterministic batch benchmark output, optimizer legality/liveness, and invalid schema/reference/shape inputs. CI runs the test suite on Python 3.11 and 3.12.
+The project has no runtime dependencies. Focused tests cover exact estimates, target-aware compute- and memory-bound roofline cases, target validation, no-target null behavior, JSON file loading, default and optimized CLI behavior, deterministic batch benchmark output, optimizer legality/liveness, the opt-in matmul lowering exercise, and invalid schema/reference/shape inputs. CI runs the test suite on Python 3.11 and 3.12.
