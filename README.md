@@ -174,6 +174,12 @@ reloads both scalar operands while the accumulator stays in a register. Its
 target-aware modeled time changes from `0.00104` to `0.00224` microseconds.
 This is a deterministic exercise in how lowering choices affect the model, not
 a runtime prediction; the assumptions are included in `after.representation`.
+The register-resident `fma` template has nonzero FLOPs and zero logical bytes,
+so its roofline arithmetic intensity is undefined. The lowered operation emits
+that value as JSON `null`, classifies the template as `compute`-bound, and keeps
+its compute-only estimated time. This is a narrow lowering-report convention;
+the shared estimator and aggregate before/after metrics retain their existing
+zero-traffic and total-cost behavior.
 The flag is single-graph only and cannot be combined with `--benchmark` or
 `--optimize`.
 

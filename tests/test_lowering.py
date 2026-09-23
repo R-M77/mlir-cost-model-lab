@@ -106,6 +106,23 @@ def test_matmul_lowering_without_target_keeps_roofline_delta_null() -> None:
     assert report["cost_delta"]["roofline"] == {"estimated_time_us": None}
 
 
+def test_zero_traffic_lowered_fma_is_compute_bound_with_null_intensity() -> None:
+    report = compare_matmul_lowering(_fixture_payload())
+    fma = next(
+        operation for operation in report["after"]["ops"] if operation["op"] == "fma"
+    )
+
+    assert fma["flops"] == 48
+    assert fma["bytes_read"] == fma["bytes_written"] == 0
+    assert fma["arithmetic_intensity"] == 0.0
+    assert fma["roofline"] == {
+        "arithmetic_intensity": None,
+        "ridge_point": pytest.approx(10.0),
+        "bound": "compute",
+        "estimated_time_us": pytest.approx(48 / (1000 * 1000)),
+    }
+
+
 @pytest.mark.parametrize(
     ("change", "message"),
     [

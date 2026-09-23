@@ -24,6 +24,31 @@ class LoweringValidationError(GraphValidationError):
 _LOWERING_KIND = "scalar_reduction"
 
 
+def _lowered_roofline_metrics(
+    flops: int,
+    bytes_read: int,
+    bytes_written: int,
+    target: Target | None,
+) -> dict[str, Any] | None:
+    """Return lowered-op roofline metrics with a JSON-safe zero-traffic case.
+
+    Arithmetic intensity is undefined for nonzero FLOPs with no logical
+    traffic.  Lowered register-resident templates are nevertheless
+    compute-bound, so their intensity is emitted as ``None`` (JSON ``null``)
+    instead of inheriting the estimator's zero-traffic ``0.0`` convention.
+    All other lowered operations retain the shared estimator behavior.
+    """
+    metrics = _roofline_metrics(flops, bytes_read, bytes_written, target)
+    if (
+        metrics is not None
+        and flops > 0
+        and bytes_read == 0
+        and bytes_written == 0
+    ):
+        return {**metrics, "arithmetic_intensity": None, "bound": "compute"}
+    return metrics
+
+
 def _validate_matmul_exercise(graph: Graph) -> tuple[Operation, Tensor, Tensor, Tensor]:
     if len(graph.operations) != 1:
         raise LoweringValidationError(
@@ -72,7 +97,9 @@ def _lowered_operation(
         "bytes_read": bytes_read,
         "bytes_written": bytes_written,
         "arithmetic_intensity": _intensity(flops, bytes_read, bytes_written),
-        "roofline": _roofline_metrics(flops, bytes_read, bytes_written, target),
+        "roofline": _lowered_roofline_metrics(
+            flops, bytes_read, bytes_written, target
+        ),
     }
 
 
