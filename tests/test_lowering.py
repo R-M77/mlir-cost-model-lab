@@ -6,6 +6,7 @@ import subprocess
 import sys
 from copy import deepcopy
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -141,18 +142,98 @@ def test_tiled_lowering_preserves_flops_and_models_tile_reuse() -> None:
             "estimated_time_us": pytest.approx(0.00104),
         },
     }
-    assert report["after"]["operation_count"] == 30
+    assert report["after"]["operation_count"] == 32
     assert report["cost_delta"] == {
         "flops": 0,
         "bytes_read": 0,
         "bytes_written": 0,
         "logical_bytes": 0,
-        "operation_count": 29,
+        "operation_count": 31,
         "roofline": {"estimated_time_us": pytest.approx(0.0)},
     }
     assert report["after"]["representation"]["kind"] == "tiled_vectorized"
     assert report["after"]["representation"]["tile_size"] == 2
     assert report["after"]["representation"]["vector_width"] == 2
+
+
+def _shaped_payload(m: int, k: int, n: int) -> dict[str, Any]:
+    payload = _fixture_payload()
+    payload["inputs"]["lhs"]["shape"] = [m, k]
+    payload["inputs"]["rhs"]["shape"] = [k, n]
+    return payload
+
+
+def _tiled_counts(report: dict[str, Any]) -> dict[str, int]:
+    return {op["name"]: op["count"] for op in report["after"]["ops"]}
+
+
+def test_tiled_n_axis_vectors_and_scalar_tails_have_exact_counts_and_traffic() -> None:
+    report = compare_matmul_lowering(
+        _shaped_payload(3, 5, 7), mode="tiled", tile_size=4, vector_width=4
+    )
+    after = report["after"]
+    assert set(report) == {"graph", "target", "before", "after", "cost_delta"}
+    assert _tiled_counts(report) == {
+        "init_accumulator_vectors": 3,
+        "init_accumulator_scalar_tail": 9,
+        "load_lhs_scalars": 15,
+        "load_rhs_vectors": 5,
+        "load_rhs_scalar_tail": 15,
+        "vector_fma": 15,
+        "scalar_tail_fma": 45,
+        "store_output_vectors": 3,
+        "store_output_scalar_tail": 9,
+    }
+    assert after["representation"]["body"] == [
+        {"name": op["name"], "op": op["op"], "count": op["count"]}
+        for op in after["ops"]
+    ]
+    assert after["representation"]["assumptions"]["vector_axis"] == "n"
+    assert after["representation"]["assumptions"]["lhs_scalar_broadcast_across_vector_lanes"]
+    assert after["representation"]["assumptions"]["incomplete_n_vectors_use_scalar_tail_operations"]
+    ops = {op["name"]: op for op in after["ops"]}
+    assert ops["vector_fma"]["inputs"] == ["lhs_scalar", "rhs_vector", "acc[m,n]"]
+    assert ops["scalar_tail_fma"]["inputs"] == ["lhs_scalar", "rhs_scalar", "acc[m,n]"]
+    assert {name: ops[name]["bytes_read"] for name in (
+        "load_lhs_scalars", "load_rhs_vectors", "load_rhs_scalar_tail"
+    )} == {"load_lhs_scalars": 60, "load_rhs_vectors": 80, "load_rhs_scalar_tail": 60}
+    assert {name: ops[name]["flops"] for name in (
+        "vector_fma", "scalar_tail_fma"
+    )} == {"vector_fma": 120, "scalar_tail_fma": 90}
+    assert {name: ops[name]["bytes_written"] for name in (
+        "store_output_vectors", "store_output_scalar_tail"
+    )} == {"store_output_vectors": 48, "store_output_scalar_tail": 36}
+    assert after["totals"]["flops"] == 210
+    assert after["totals"]["bytes_read"] == 200
+    assert after["totals"]["bytes_written"] == 84
+    assert after["operation_count"] == 119
+    assert report["cost_delta"]["flops"] == 0
+    assert report["cost_delta"]["bytes_read"] == 0
+    assert report["cost_delta"]["bytes_written"] == 0
+    assert report["cost_delta"]["operation_count"] == 118
+
+
+@pytest.mark.parametrize(
+    ("shape", "tile_size", "vector_width", "expected"),
+    [
+        ((3, 5, 7), 4, 1, (21, 0, 15, 35, 0, 105, 0, 21, 0)),
+        ((3, 5, 7), 4, 8, (0, 21, 15, 0, 35, 0, 105, 0, 21)),
+        ((5, 3, 9), 4, 3, (10, 15, 15, 6, 9, 30, 45, 10, 15)),
+    ],
+)
+def test_tiled_lane_boundaries(
+    shape: tuple[int, int, int], tile_size: int, vector_width: int,
+    expected: tuple[int, ...],
+) -> None:
+    m, k, n = shape
+    report = compare_matmul_lowering(
+        _shaped_payload(m, k, n), mode="tiled",
+        tile_size=tile_size, vector_width=vector_width,
+    )
+    assert tuple(_tiled_counts(report).values()) == expected
+    assert report["after"]["totals"]["flops"] == 2 * m * k * n
+    assert report["after"]["totals"]["bytes_read"] == (m * k + k * n) * 4
+    assert report["after"]["totals"]["bytes_written"] == m * n * 4
 
 
 def test_tiled_lowering_cli_accepts_mode_and_parameters() -> None:
@@ -173,6 +254,22 @@ def test_tiled_lowering_cli_accepts_mode_and_parameters() -> None:
     report = json.loads(result.stdout)
     assert report["after"]["representation"]["kind"] == "tiled_vectorized"
     assert report["after"]["totals"]["flops"] == report["before"]["totals"]["flops"]
+
+
+def test_tiled_compact_cli_is_deterministic(tmp_path: Path) -> None:
+    graph_path = tmp_path / "ragged_matmul.json"
+    graph_path.write_text(json.dumps(_shaped_payload(3, 5, 7)), encoding="utf-8")
+    args = (
+        "--lower-matmul", "--lowering-mode", "tiled", "--tile-size", "4",
+        "--vector-width", "4", "--compact", str(graph_path),
+    )
+    first = _run_cli(*args)
+    second = _run_cli(*args)
+    assert first.returncode == second.returncode == 0
+    assert first.stderr == second.stderr == ""
+    assert first.stdout == second.stdout
+    assert json.loads(first.stdout)["after"]["representation"]["kind"] == "tiled_vectorized"
+    assert _tiled_counts(json.loads(first.stdout))["scalar_tail_fma"] == 45
 
 
 def test_lowering_mode_requires_lowering_flag() -> None:

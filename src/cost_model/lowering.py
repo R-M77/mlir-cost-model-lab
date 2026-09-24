@@ -1,10 +1,9 @@
 """An opt-in, dependency-free matmul lowering exercise.
 
 The lowering is intentionally a target-independent representation rather than
-real MLIR.  It expands one rank-2 ``matmul`` into a three-deep scalar loop nest
-with explicit loads, accumulator initialization, FMAs, and an output store.
-The loop body is represented with counted operation templates so large shapes
-do not require materializing one object per scalar operation.
+real MLIR. It expands one rank-2 ``matmul`` into scalar or N-axis tiled/vector
+operation templates for loads, accumulator initialization, FMAs, and stores.
+Counted templates avoid materializing one object per instruction.
 """
 
 from __future__ import annotations
@@ -226,63 +225,94 @@ def _tiled_vectorized_representation(
     m, k = lhs.shape
     _, n = rhs.shape
     scalar_bytes = DTYPE_BYTES[lhs.dtype]
-    output_elements = m * n
-    reduction_terms = output_elements * k
-    zero_count = load_lhs_count = load_rhs_count = fma_count = store_count = 0
-    lhs_elements = rhs_elements = 0
+    zero_vectors = zero_scalar_tail = 0
+    load_lhs_scalars = load_rhs_vectors = load_rhs_scalar_tail = 0
+    vector_fmas = scalar_tail_fmas = 0
+    store_vectors = store_scalar_tail = 0
 
     for m0 in range(0, m, tile_size):
         rows = min(tile_size, m - m0)
         for n0 in range(0, n, tile_size):
             cols = min(tile_size, n - n0)
-            zero_count += rows * _ceil_div(cols, vector_width)
-            store_count += rows * _ceil_div(cols, vector_width)
+            full_vectors, tail_lanes = divmod(cols, vector_width)
+            zero_vectors += rows * full_vectors
+            zero_scalar_tail += rows * tail_lanes
+            store_vectors += rows * full_vectors
+            store_scalar_tail += rows * tail_lanes
     for m0 in range(0, m, tile_size):
         rows = min(tile_size, m - m0)
         for k0 in range(0, k, tile_size):
             depth = min(tile_size, k - k0)
-            lhs_elements += rows * depth
-            load_lhs_count += rows * _ceil_div(depth, vector_width)
+            # One scalar LHS value is loaded for each (m, k) and broadcast
+            # across N lanes; it is reused across all N tiles.
+            load_lhs_scalars += rows * depth
     for k0 in range(0, k, tile_size):
         depth = min(tile_size, k - k0)
         for n0 in range(0, n, tile_size):
             cols = min(tile_size, n - n0)
-            rhs_elements += depth * cols
-            load_rhs_count += depth * _ceil_div(cols, vector_width)
+            full_vectors, tail_lanes = divmod(cols, vector_width)
+            load_rhs_vectors += depth * full_vectors
+            load_rhs_scalar_tail += depth * tail_lanes
     for m0 in range(0, m, tile_size):
         rows = min(tile_size, m - m0)
         for n0 in range(0, n, tile_size):
             cols = min(tile_size, n - n0)
+            full_vectors, tail_lanes = divmod(cols, vector_width)
             for k0 in range(0, k, tile_size):
                 depth = min(tile_size, k - k0)
-                fma_count += rows * _ceil_div(cols, vector_width) * depth
+                vector_fmas += rows * full_vectors * depth
+                scalar_tail_fmas += rows * tail_lanes * depth
 
     lowered_ops = [
         _lowered_operation(
-            name="init_accumulator_vectors", kind="zero", count=zero_count,
+            name="init_accumulator_vectors", kind="zero", count=zero_vectors,
             dtype=output.dtype, inputs=[], outputs=["acc[m,n]"], flops=0,
             bytes_read=0, bytes_written=0, target=target,
         ),
         _lowered_operation(
-            name="load_lhs_tiles", kind="load", count=load_lhs_count,
-            dtype=lhs.dtype, inputs=["lhs[m,k]"], outputs=["lhs_vector"], flops=0,
-            bytes_read=lhs_elements * scalar_bytes, bytes_written=0, target=target,
-        ),
-        _lowered_operation(
-            name="load_rhs_tiles", kind="load", count=load_rhs_count,
-            dtype=rhs.dtype, inputs=["rhs[k,n]"], outputs=["rhs_vector"], flops=0,
-            bytes_read=rhs_elements * scalar_bytes, bytes_written=0, target=target,
-        ),
-        _lowered_operation(
-            name="vector_fma", kind="fma", count=fma_count,
-            dtype=output.dtype, inputs=["lhs_vector", "rhs_vector", "acc[m,n]"],
-            outputs=["acc[m,n]"], flops=2 * reduction_terms,
+            name="init_accumulator_scalar_tail", kind="zero", count=zero_scalar_tail,
+            dtype=output.dtype, inputs=[], outputs=["acc[m,n]"], flops=0,
             bytes_read=0, bytes_written=0, target=target,
         ),
         _lowered_operation(
-            name="store_output_vectors", kind="store", count=store_count,
+            name="load_lhs_scalars", kind="load", count=load_lhs_scalars,
+            dtype=lhs.dtype, inputs=["lhs[m,k]"], outputs=["lhs_scalar"], flops=0,
+            bytes_read=load_lhs_scalars * scalar_bytes, bytes_written=0, target=target,
+        ),
+        _lowered_operation(
+            name="load_rhs_vectors", kind="load", count=load_rhs_vectors,
+            dtype=rhs.dtype, inputs=["rhs[k,n]"], outputs=["rhs_vector"], flops=0,
+            bytes_read=load_rhs_vectors * vector_width * scalar_bytes,
+            bytes_written=0, target=target,
+        ),
+        _lowered_operation(
+            name="load_rhs_scalar_tail", kind="load", count=load_rhs_scalar_tail,
+            dtype=rhs.dtype, inputs=["rhs[k,n]"], outputs=["rhs_scalar"], flops=0,
+            bytes_read=load_rhs_scalar_tail * scalar_bytes,
+            bytes_written=0, target=target,
+        ),
+        _lowered_operation(
+            name="vector_fma", kind="fma", count=vector_fmas,
+            dtype=output.dtype, inputs=["lhs_scalar", "rhs_vector", "acc[m,n]"],
+            outputs=["acc[m,n]"], flops=2 * vector_fmas * vector_width,
+            bytes_read=0, bytes_written=0, target=target,
+        ),
+        _lowered_operation(
+            name="scalar_tail_fma", kind="fma", count=scalar_tail_fmas,
+            dtype=output.dtype, inputs=["lhs_scalar", "rhs_scalar", "acc[m,n]"],
+            outputs=["acc[m,n]"], flops=2 * scalar_tail_fmas,
+            bytes_read=0, bytes_written=0, target=target,
+        ),
+        _lowered_operation(
+            name="store_output_vectors", kind="store", count=store_vectors,
             dtype=output.dtype, inputs=["acc[m,n]"], outputs=["output[m,n]"], flops=0,
-            bytes_read=0, bytes_written=output.nbytes, target=target,
+            bytes_read=0, bytes_written=store_vectors * vector_width * scalar_bytes,
+            target=target,
+        ),
+        _lowered_operation(
+            name="store_output_scalar_tail", kind="store", count=store_scalar_tail,
+            dtype=output.dtype, inputs=["acc[m,n]"], outputs=["output[m,n]"], flops=0,
+            bytes_read=0, bytes_written=store_scalar_tail * scalar_bytes, target=target,
         ),
     ]
     representation = {
@@ -297,8 +327,10 @@ def _tiled_vectorized_representation(
         ],
         "assumptions": {
             "input_tiles_reused_across_output_tiles": True,
+            "vector_axis": "n",
+            "lhs_scalar_broadcast_across_vector_lanes": True,
             "vector_width_is_an_instruction_laning_factor": True,
-            "partial_tiles_use_scalar_tail_lanes": True,
+            "incomplete_n_vectors_use_scalar_tail_operations": True,
             "cache_capacity_and_alignment_modeled": False,
             "real_mlir_required": False,
         },

@@ -22,7 +22,7 @@ The package under `src/cost_model` is split into six small layers:
 - `parser.py` — JSON schema validation, value lookup, and static shape inference.
 - `estimator.py` — FLOP, byte-traffic, arithmetic-intensity, roofline, and baseline fusion calculations.
 - `optimizer.py` — opt-in liveness-aware elementwise fusion planning and before/after reporting.
-- `lowering.py` — an opt-in, target-independent scalar matmul lowering exercise and cost comparison.
+- `lowering.py` — opt-in, target-independent scalar or N-axis tiled/vector matmul lowering and cost comparison.
 - `cli.py` / `__main__.py` — stable `python -m cost_model` interface, batch benchmark mode, deterministic budget gate, and readable JSON output.
 
 The parser processes operations in source order, so an operation can only use an input or an earlier result. Elementwise `add` and `mul` use trailing-dimension broadcasting; `matmul` is rank-2 only. An optional validated target is carried with the graph. The estimator preserves operation order and emits JSON-friendly integer counts plus floating-point intensity and roofline values.
@@ -193,12 +193,31 @@ PYTHONPATH=src python -m cost_model \
   examples/matmul_lowering.json
 ```
 
-The tiled representation counts input tiles once, reuses them across output
-tiles, models vector instruction counts with tail lanes, and preserves exact
-scalar FLOPs and logical output traffic. It remains a cost-model exercise:
-cache capacity, alignment, register pressure, and generated machine code are
-not modeled. The same `before`, `after`, and `cost_delta` contract is returned
-for both `scalar` and `tiled` modes.
+The tiled representation splits M, N, and K into tiles (including ragged final
+tiles) and vectorizes **only along N**, independently within each N tile.
+For each row of an N tile, `divmod(tile_columns, vector_width)` gives the
+number of full-width vector operations and the number of individual scalar
+tail operations. No masked or partial-width vector is counted: even when a
+later tile could complete a vector, vectors never cross tile boundaries.
+`vector_width=1` yields full one-lane vectors and no tails; a width greater
+than the tile's N extent yields only scalar-tail operations.
+
+Each `(m,k)` LHS value is a **scalar load** broadcast into N lanes and reused
+across N tiles; each `(k,n)` RHS value is loaded once across M tiles, either
+as part of a full-width RHS vector or as a scalar-tail load. Accumulators and
+stores have separate vector and scalar-tail templates. Vector FMAs count
+`2 * vector_width` FLOPs each; scalar-tail FMAs count 2 each. The operation
+templates include zero-count categories for a stable report shape. Logical
+input traffic is one read per input element and output traffic is one write
+per output element, independent of tile or vector width. For f32
+`M=3, K=5, N=7`, tile size 4 and vector width 4, the report counts 15 vector
+and 45 scalar-tail FMAs, 3 vector and 9 scalar-tail initializations and stores
+each, 15 scalar LHS loads, and 5 vector plus 15 scalar-tail RHS loads: 210
+FLOPs, 200 bytes read, and 84 bytes written. This assumes ideal input reuse;
+cache capacity, alignment, register pressure, instruction scheduling, and
+generated machine code are not modeled. The same `before`, `after`, and
+`cost_delta` contract is returned for both `scalar` (the default) and `tiled`
+modes.
 
 Install the project and test extras in a virtual environment when desired:
 
