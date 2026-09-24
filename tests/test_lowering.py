@@ -123,6 +123,65 @@ def test_zero_traffic_lowered_fma_is_compute_bound_with_null_intensity() -> None
     }
 
 
+def test_tiled_lowering_preserves_flops_and_models_tile_reuse() -> None:
+    report = compare_matmul_lowering(
+        _fixture_payload(), mode="tiled", tile_size=2, vector_width=2
+    )
+
+    assert report["before"]["totals"]["flops"] == 48
+    assert report["after"]["totals"] == {
+        "flops": 48,
+        "bytes_read": 72,
+        "bytes_written": 32,
+        "arithmetic_intensity": pytest.approx(48 / 104),
+        "roofline": {
+            "arithmetic_intensity": pytest.approx(48 / 104),
+            "ridge_point": pytest.approx(10.0),
+            "bound": "memory",
+            "estimated_time_us": pytest.approx(0.00104),
+        },
+    }
+    assert report["after"]["operation_count"] == 30
+    assert report["cost_delta"] == {
+        "flops": 0,
+        "bytes_read": 0,
+        "bytes_written": 0,
+        "logical_bytes": 0,
+        "operation_count": 29,
+        "roofline": {"estimated_time_us": pytest.approx(0.0)},
+    }
+    assert report["after"]["representation"]["kind"] == "tiled_vectorized"
+    assert report["after"]["representation"]["tile_size"] == 2
+    assert report["after"]["representation"]["vector_width"] == 2
+
+
+def test_tiled_lowering_cli_accepts_mode_and_parameters() -> None:
+    result = _run_cli(
+        "--lower-matmul",
+        "--lowering-mode",
+        "tiled",
+        "--tile-size",
+        "2",
+        "--vector-width",
+        "2",
+        "--compact",
+        str(FIXTURE_PATH),
+    )
+
+    assert result.returncode == 0
+    assert result.stderr == ""
+    report = json.loads(result.stdout)
+    assert report["after"]["representation"]["kind"] == "tiled_vectorized"
+    assert report["after"]["totals"]["flops"] == report["before"]["totals"]["flops"]
+
+
+def test_lowering_mode_requires_lowering_flag() -> None:
+    result = _run_cli("--lowering-mode", "tiled", str(FIXTURE_PATH))
+
+    assert result.returncode == 2
+    assert "--lowering-mode requires --lower-matmul" in result.stderr
+
+
 @pytest.mark.parametrize(
     ("change", "message"),
     [

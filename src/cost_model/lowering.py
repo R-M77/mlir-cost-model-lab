@@ -22,6 +22,11 @@ class LoweringValidationError(GraphValidationError):
 
 
 _LOWERING_KIND = "scalar_reduction"
+_TILED_LOWERING_KIND = "tiled_vectorized"
+
+
+def _ceil_div(value: int, divisor: int) -> int:
+    return (value + divisor - 1) // divisor
 
 
 def _lowered_roofline_metrics(
@@ -207,6 +212,100 @@ def _lowered_representation(
     return representation, lowered_ops
 
 
+def _tiled_vectorized_representation(
+    operation: Operation,
+    lhs: Tensor,
+    rhs: Tensor,
+    output: Tensor,
+    target: Target | None,
+    *,
+    tile_size: int,
+    vector_width: int,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Build a cache-reuse-aware tiled/vectorized matmul representation."""
+    m, k = lhs.shape
+    _, n = rhs.shape
+    scalar_bytes = DTYPE_BYTES[lhs.dtype]
+    output_elements = m * n
+    reduction_terms = output_elements * k
+    zero_count = load_lhs_count = load_rhs_count = fma_count = store_count = 0
+    lhs_elements = rhs_elements = 0
+
+    for m0 in range(0, m, tile_size):
+        rows = min(tile_size, m - m0)
+        for n0 in range(0, n, tile_size):
+            cols = min(tile_size, n - n0)
+            zero_count += rows * _ceil_div(cols, vector_width)
+            store_count += rows * _ceil_div(cols, vector_width)
+    for m0 in range(0, m, tile_size):
+        rows = min(tile_size, m - m0)
+        for k0 in range(0, k, tile_size):
+            depth = min(tile_size, k - k0)
+            lhs_elements += rows * depth
+            load_lhs_count += rows * _ceil_div(depth, vector_width)
+    for k0 in range(0, k, tile_size):
+        depth = min(tile_size, k - k0)
+        for n0 in range(0, n, tile_size):
+            cols = min(tile_size, n - n0)
+            rhs_elements += depth * cols
+            load_rhs_count += depth * _ceil_div(cols, vector_width)
+    for m0 in range(0, m, tile_size):
+        rows = min(tile_size, m - m0)
+        for n0 in range(0, n, tile_size):
+            cols = min(tile_size, n - n0)
+            for k0 in range(0, k, tile_size):
+                depth = min(tile_size, k - k0)
+                fma_count += rows * _ceil_div(cols, vector_width) * depth
+
+    lowered_ops = [
+        _lowered_operation(
+            name="init_accumulator_vectors", kind="zero", count=zero_count,
+            dtype=output.dtype, inputs=[], outputs=["acc[m,n]"], flops=0,
+            bytes_read=0, bytes_written=0, target=target,
+        ),
+        _lowered_operation(
+            name="load_lhs_tiles", kind="load", count=load_lhs_count,
+            dtype=lhs.dtype, inputs=["lhs[m,k]"], outputs=["lhs_vector"], flops=0,
+            bytes_read=lhs_elements * scalar_bytes, bytes_written=0, target=target,
+        ),
+        _lowered_operation(
+            name="load_rhs_tiles", kind="load", count=load_rhs_count,
+            dtype=rhs.dtype, inputs=["rhs[k,n]"], outputs=["rhs_vector"], flops=0,
+            bytes_read=rhs_elements * scalar_bytes, bytes_written=0, target=target,
+        ),
+        _lowered_operation(
+            name="vector_fma", kind="fma", count=fma_count,
+            dtype=output.dtype, inputs=["lhs_vector", "rhs_vector", "acc[m,n]"],
+            outputs=["acc[m,n]"], flops=2 * reduction_terms,
+            bytes_read=0, bytes_written=0, target=target,
+        ),
+        _lowered_operation(
+            name="store_output_vectors", kind="store", count=store_count,
+            dtype=output.dtype, inputs=["acc[m,n]"], outputs=["output[m,n]"], flops=0,
+            bytes_read=0, bytes_written=output.nbytes, target=target,
+        ),
+    ]
+    representation = {
+        "kind": _TILED_LOWERING_KIND,
+        "source_operation": operation.name,
+        "tile_size": tile_size,
+        "vector_width": vector_width,
+        "tile_grid": {"m": _ceil_div(m, tile_size), "n": _ceil_div(n, tile_size), "k": _ceil_div(k, tile_size)},
+        "body": [
+            {"name": item["name"], "op": item["op"], "count": item["count"]}
+            for item in lowered_ops
+        ],
+        "assumptions": {
+            "input_tiles_reused_across_output_tiles": True,
+            "vector_width_is_an_instruction_laning_factor": True,
+            "partial_tiles_use_scalar_tail_lanes": True,
+            "cache_capacity_and_alignment_modeled": False,
+            "real_mlir_required": False,
+        },
+    }
+    return representation, lowered_ops
+
+
 def _lowered_report(
     graph: Graph, representation: dict[str, Any], operations: list[dict[str, Any]]
 ) -> dict[str, Any]:
@@ -263,13 +362,29 @@ def _cost_delta(before: Mapping[str, Any], after: Mapping[str, Any]) -> dict[str
     }
 
 
-def compare_matmul_lowering_graph(graph: Graph) -> dict[str, Any]:
-    """Compare a validated single-matmul graph with its scalar lowering."""
+def compare_matmul_lowering_graph(
+    graph: Graph,
+    *,
+    mode: str = "scalar",
+    tile_size: int = 16,
+    vector_width: int = 4,
+) -> dict[str, Any]:
+    """Compare a validated single-matmul graph with a selected lowering."""
     operation, lhs, rhs, output = _validate_matmul_exercise(graph)
+    if mode not in {"scalar", "tiled"}:
+        raise LoweringValidationError("lowering mode must be 'scalar' or 'tiled'")
+    if tile_size <= 0 or vector_width <= 0:
+        raise LoweringValidationError("tile_size and vector_width must be positive")
     before = estimate_graph(graph)
-    representation, lowered_operations = _lowered_representation(
-        operation, lhs, rhs, output, graph.target
-    )
+    if mode == "scalar":
+        representation, lowered_operations = _lowered_representation(
+            operation, lhs, rhs, output, graph.target
+        )
+    else:
+        representation, lowered_operations = _tiled_vectorized_representation(
+            operation, lhs, rhs, output, graph.target,
+            tile_size=tile_size, vector_width=vector_width,
+        )
     after = _lowered_report(graph, representation, lowered_operations)
     return {
         "graph": graph.name,
@@ -280,6 +395,14 @@ def compare_matmul_lowering_graph(graph: Graph) -> dict[str, Any]:
     }
 
 
-def compare_matmul_lowering(payload: Mapping[str, Any]) -> dict[str, Any]:
-    """Validate and compare one graph before and after scalar matmul lowering."""
-    return compare_matmul_lowering_graph(parse_graph(payload))
+def compare_matmul_lowering(
+    payload: Mapping[str, Any],
+    *,
+    mode: str = "scalar",
+    tile_size: int = 16,
+    vector_width: int = 4,
+) -> dict[str, Any]:
+    """Validate and compare one graph before and after matmul lowering."""
+    return compare_matmul_lowering_graph(
+        parse_graph(payload), mode=mode, tile_size=tile_size, vector_width=vector_width
+    )

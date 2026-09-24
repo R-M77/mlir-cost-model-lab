@@ -181,7 +181,24 @@ its compute-only estimated time. This is a narrow lowering-report convention;
 the shared estimator and aggregate before/after metrics retain their existing
 zero-traffic and total-cost behavior.
 The flag is single-graph only and cannot be combined with `--benchmark` or
-`--optimize`.
+`--optimize`. Select the tiled/vectorized lowering with explicit tile and lane
+parameters:
+
+```bash
+PYTHONPATH=src python -m cost_model \
+  --lower-matmul \
+  --lowering-mode tiled \
+  --tile-size 16 \
+  --vector-width 4 \
+  examples/matmul_lowering.json
+```
+
+The tiled representation counts input tiles once, reuses them across output
+tiles, models vector instruction counts with tail lanes, and preserves exact
+scalar FLOPs and logical output traffic. It remains a cost-model exercise:
+cache capacity, alignment, register pressure, and generated machine code are
+not modeled. The same `before`, `after`, and `cost_delta` contract is returned
+for both `scalar` and `tiled` modes.
 
 Install the project and test extras in a virtual environment when desired:
 

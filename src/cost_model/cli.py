@@ -379,7 +379,25 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--lower-matmul",
         action="store_true",
-        help="emit an opt-in before/after scalar matmul lowering report",
+        help="emit an opt-in before/after matmul lowering report",
+    )
+    parser.add_argument(
+        "--lowering-mode",
+        choices=("scalar", "tiled"),
+        default="scalar",
+        help="matmul lowering representation to compare",
+    )
+    parser.add_argument(
+        "--tile-size",
+        type=int,
+        default=16,
+        help="tiled lowering M/N/K tile extent (default: 16)",
+    )
+    parser.add_argument(
+        "--vector-width",
+        type=int,
+        default=4,
+        help="tiled lowering vector lane width (default: 4)",
     )
     return parser
 
@@ -393,6 +411,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error("--lower-matmul requires a single graph path")
     if args.lower_matmul and args.optimize:
         parser.error("--lower-matmul cannot be combined with --optimize")
+    if not args.lower_matmul and args.lowering_mode != "scalar":
+        parser.error("--lowering-mode requires --lower-matmul")
+    if args.tile_size <= 0 or args.vector_width <= 0:
+        parser.error("--tile-size and --vector-width must be positive")
     if args.graph is None and args.benchmark is None:
         parser.error("a graph path or --benchmark JSON is required")
     if args.graph is not None and args.benchmark is not None:
@@ -415,7 +437,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             assert args.graph is not None
             graph = load_graph(args.graph)
             if args.lower_matmul:
-                report = compare_matmul_lowering_graph(graph)
+                report = compare_matmul_lowering_graph(
+                    graph,
+                    mode=args.lowering_mode,
+                    tile_size=args.tile_size,
+                    vector_width=args.vector_width,
+                )
             else:
                 report = optimize_graph(graph) if args.optimize else estimate_graph(graph)
     except GraphValidationError as exc:
