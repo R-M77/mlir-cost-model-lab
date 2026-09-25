@@ -13,6 +13,8 @@ import pytest
 from cost_model import (
     LoweringValidationError,
     compare_matmul_lowering,
+    compare_matmul_lowering_graph,
+    parse_graph,
 )
 
 
@@ -154,6 +156,35 @@ def test_tiled_lowering_preserves_flops_and_models_tile_reuse() -> None:
     assert report["after"]["representation"]["kind"] == "tiled_vectorized"
     assert report["after"]["representation"]["tile_size"] == 2
     assert report["after"]["representation"]["vector_width"] == 2
+
+
+def _compare_with_parameter(as_graph: bool, parameter: str, value: Any) -> dict[str, Any]:
+    kwargs = {parameter: value}
+    if as_graph:
+        return compare_matmul_lowering_graph(
+            parse_graph(_fixture_payload()), mode="tiled", **kwargs
+        )
+    return compare_matmul_lowering(_fixture_payload(), mode="tiled", **kwargs)
+
+
+@pytest.mark.parametrize("as_graph", [False, True], ids=["payload", "graph"])
+@pytest.mark.parametrize("parameter", ["tile_size", "vector_width"])
+@pytest.mark.parametrize("value", [True, False, 2.0, -1.5, "2", None, 0, -2])
+def test_matmul_lowering_rejects_invalid_parameters(
+    as_graph: bool, parameter: str, value: Any
+) -> None:
+    with pytest.raises(LoweringValidationError, match=rf"^{parameter} must be a positive integer$"):
+        _compare_with_parameter(as_graph, parameter, value)
+
+
+@pytest.mark.parametrize("as_graph", [False, True], ids=["payload", "graph"])
+@pytest.mark.parametrize("parameter", ["tile_size", "vector_width"])
+def test_matmul_lowering_accepts_positive_integer_parameters(
+    as_graph: bool, parameter: str
+) -> None:
+    report = _compare_with_parameter(as_graph, parameter, 1)
+    assert report["after"]["representation"][parameter] == 1
+    assert report["after"]["totals"]["flops"] == report["before"]["totals"]["flops"]
 
 
 def _shaped_payload(m: int, k: int, n: int) -> dict[str, Any]:

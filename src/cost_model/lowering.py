@@ -405,8 +405,9 @@ def compare_matmul_lowering_graph(
     operation, lhs, rhs, output = _validate_matmul_exercise(graph)
     if mode not in {"scalar", "tiled"}:
         raise LoweringValidationError("lowering mode must be 'scalar' or 'tiled'")
-    if tile_size <= 0 or vector_width <= 0:
-        raise LoweringValidationError("tile_size and vector_width must be positive")
+    for name, value in (("tile_size", tile_size), ("vector_width", vector_width)):
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            raise LoweringValidationError(f"{name} must be a positive integer")
     before = estimate_graph(graph)
     if mode == "scalar":
         representation, lowered_operations = _lowered_representation(
