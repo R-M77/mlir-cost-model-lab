@@ -311,6 +311,29 @@ def test_lowering_mode_requires_lowering_flag() -> None:
 
 
 @pytest.mark.parametrize(
+    ("option", "value"),
+    [
+        ("--tile-size", "0"),
+        ("--tile-size", "-1"),
+        ("--tile-size", "not-an-int"),
+        ("--vector-width", "0"),
+        ("--vector-width", "-1"),
+        ("--vector-width", "not-an-int"),
+    ],
+)
+def test_lowering_cli_rejects_invalid_tile_parameters_with_status_two(
+    option: str, value: str
+) -> None:
+    result = _run_cli(
+        "--lower-matmul", option, value, str(FIXTURE_PATH)
+    )
+
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert "error:" in result.stderr
+
+
+@pytest.mark.parametrize(
     ("change", "message"),
     [
         (
