@@ -209,6 +209,10 @@ def load_graph(path: str | Path) -> Graph:
         payload = json.loads(text)
     except OSError as exc:
         raise GraphValidationError(f"could not read graph {graph_path}: {exc}") from exc
+    except UnicodeDecodeError as exc:
+        raise GraphValidationError(
+            f"invalid graph UTF-8 at byte {exc.start}: {exc.reason}"
+        ) from exc
     except JSONDecodeError as exc:
         raise GraphValidationError(f"invalid JSON: {exc.msg} at line {exc.lineno} column {exc.colno}") from exc
     if not isinstance(payload, Mapping):

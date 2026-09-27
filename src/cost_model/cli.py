@@ -26,6 +26,10 @@ def _load_benchmark_cases(
         raise GraphValidationError(
             f"could not read benchmark {benchmark_path}: {exc}"
         ) from exc
+    except UnicodeDecodeError as exc:
+        raise GraphValidationError(
+            f"invalid benchmark UTF-8 at byte {exc.start}: {exc.reason}"
+        ) from exc
     except json.JSONDecodeError as exc:
         raise GraphValidationError(
             f"invalid benchmark JSON: {exc.msg} at line {exc.lineno} column {exc.colno}"
@@ -184,6 +188,10 @@ def _load_budget(budget_path: Path) -> dict[str, Any]:
     except OSError as exc:
         raise GraphValidationError(
             f"invalid budget {budget_path}: could not read file: {exc}"
+        ) from exc
+    except UnicodeDecodeError as exc:
+        raise GraphValidationError(
+            f"invalid budget UTF-8 at byte {exc.start}: {exc.reason}"
         ) from exc
     except json.JSONDecodeError as exc:
         raise GraphValidationError(

@@ -279,6 +279,134 @@ def test_invalid_benchmark_input_returns_cli_error(tmp_path: Path) -> None:
     assert "error: benchmark JSON must contain an array" in result.stderr
 
 
+def test_malformed_benchmark_json_returns_cli_error(tmp_path: Path) -> None:
+    benchmark_path = tmp_path / "benchmark.json"
+    benchmark_path.write_text("{", encoding="utf-8")
+
+    result = _run_cli("--benchmark", str(benchmark_path))
+
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert result.stderr.startswith("error: invalid benchmark JSON: ")
+    assert result.stderr.endswith("at line 1 column 2\n")
+
+
+def test_invalid_utf8_benchmark_json_returns_cli_error(tmp_path: Path) -> None:
+    benchmark_path = tmp_path / "benchmark.json"
+    benchmark_path.write_bytes(b"\xff")
+
+    result = _run_cli("--benchmark", str(benchmark_path))
+
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert result.stderr == "error: invalid benchmark UTF-8 at byte 0: invalid start byte\n"
+
+
+def test_unreadable_benchmark_path_returns_cli_error(tmp_path: Path) -> None:
+    benchmark_path = tmp_path / "benchmark-directory"
+    benchmark_path.mkdir()
+
+    result = _run_cli("--benchmark", str(benchmark_path))
+
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert result.stderr.startswith(
+        f"error: could not read benchmark {benchmark_path}: "
+    )
+
+
+def test_missing_graph_path_in_benchmark_returns_cli_error(tmp_path: Path) -> None:
+    benchmark_path = tmp_path / "benchmark.json"
+    graph_path = tmp_path / "missing.json"
+    benchmark_path.write_text(
+        json.dumps([{"name": "missing_case", "path": graph_path.name}]),
+        encoding="utf-8",
+    )
+
+    result = _run_cli("--benchmark", str(benchmark_path))
+
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert result.stderr.startswith(
+        f"error: benchmark case 'missing_case': could not read graph {graph_path}: "
+    )
+
+
+def test_malformed_graph_json_in_benchmark_returns_cli_error(tmp_path: Path) -> None:
+    benchmark_path = tmp_path / "benchmark.json"
+    graph_path = tmp_path / "malformed.json"
+    graph_path.write_text("{", encoding="utf-8")
+    benchmark_path.write_text(
+        json.dumps([{"name": "malformed_case", "path": graph_path.name}]),
+        encoding="utf-8",
+    )
+
+    result = _run_cli("--benchmark", str(benchmark_path))
+
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert result.stderr.startswith(
+        "error: benchmark case 'malformed_case': invalid JSON: "
+    )
+    assert result.stderr.endswith("at line 1 column 2\n")
+
+
+def test_invalid_utf8_graph_json_in_benchmark_returns_cli_error(
+    tmp_path: Path,
+) -> None:
+    benchmark_path = tmp_path / "benchmark.json"
+    graph_path = tmp_path / "invalid.json"
+    graph_path.write_bytes(b"\xff")
+    benchmark_path.write_text(
+        json.dumps([{"name": "invalid_case", "path": graph_path.name}]),
+        encoding="utf-8",
+    )
+
+    result = _run_cli("--benchmark", str(benchmark_path))
+
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert result.stderr == (
+        "error: benchmark case 'invalid_case': invalid graph UTF-8 at byte 0: "
+        "invalid start byte\n"
+    )
+
+
+def test_missing_positional_graph_path_returns_cli_error(tmp_path: Path) -> None:
+    graph_path = tmp_path / "missing.json"
+
+    result = _run_cli(str(graph_path))
+
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert result.stderr.startswith(f"error: could not read graph {graph_path}: ")
+
+
+def test_malformed_positional_graph_json_returns_cli_error(tmp_path: Path) -> None:
+    graph_path = tmp_path / "malformed.json"
+    graph_path.write_text("{", encoding="utf-8")
+
+    result = _run_cli(str(graph_path))
+
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert result.stderr.startswith("error: invalid JSON: ")
+    assert result.stderr.endswith("at line 1 column 2\n")
+
+
+def test_invalid_utf8_positional_graph_json_returns_cli_error(
+    tmp_path: Path,
+) -> None:
+    graph_path = tmp_path / "invalid.json"
+    graph_path.write_bytes(b"\xff")
+
+    result = _run_cli(str(graph_path))
+
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert result.stderr == "error: invalid graph UTF-8 at byte 0: invalid start byte\n"
+
+
 def test_benchmark_rejects_duplicate_effective_case_names(tmp_path: Path) -> None:
     graph_path = tmp_path / "graph.json"
     graph_path.write_text(json.dumps(_relu_graph("same_case")), encoding="utf-8")
@@ -459,6 +587,22 @@ def test_invalid_benchmark_budget_schema_fails_closed(tmp_path: Path) -> None:
     assert result.returncode == 2
     assert result.stdout == ""
     assert "error: invalid budget aggregate.flops must be a finite non-negative number" in result.stderr
+
+
+def test_invalid_utf8_budget_json_returns_cli_error(tmp_path: Path) -> None:
+    budget_path = tmp_path / "budget.json"
+    budget_path.write_bytes(b"\xff")
+
+    result = _run_cli(
+        "--benchmark",
+        str(TARGET_BOUNDS_BENCHMARK),
+        "--budget",
+        str(budget_path),
+    )
+
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert result.stderr == "error: invalid budget UTF-8 at byte 0: invalid start byte\n"
 
 
 def test_targetless_estimated_time_is_optional_but_cannot_be_checked(
