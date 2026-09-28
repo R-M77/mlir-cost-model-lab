@@ -53,7 +53,7 @@ Run the opt-in matmul-lowering exercise:
 PYTHONPATH=src python -m cost_model --lower-matmul examples/matmul_lowering.json
 ```
 
-Run several graph files as one deterministic batch. The `--benchmark` file is a non-empty JSON array. Each item can be a graph path string, or an object with an explicit case name and graph path:
+Run several graph files as one deterministic batch. The `--benchmark` file is a non-empty JSON array. Each item can be a graph path string, or an object containing exactly the required `name` and `path` fields:
 
 ```json
 [

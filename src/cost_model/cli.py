@@ -46,12 +46,24 @@ def _load_benchmark_cases(
         raw_graph_path: Any = raw_case
         label = f"benchmark[{index}]"
         if isinstance(raw_case, Mapping):
-            case_name = raw_case.get("name")
-            raw_graph_path = raw_case.get("path")
+            unsupported_fields = sorted(set(raw_case) - {"name", "path"})
+            if unsupported_fields:
+                names = ", ".join(repr(field) for field in unsupported_fields)
+                raise GraphValidationError(
+                    f"benchmark[{index}] has unsupported field(s): {names}"
+                )
+            if "name" not in raw_case:
+                raise GraphValidationError(
+                    f"benchmark[{index}].name is required for object cases"
+                )
+            if "path" not in raw_case:
+                raise GraphValidationError(
+                    f"benchmark[{index}].path is required for object cases"
+                )
+            case_name = raw_case["name"]
+            raw_graph_path = raw_case["path"]
             label = f"benchmark[{index}].path"
-            if case_name is not None and (
-                not isinstance(case_name, str) or not case_name.strip()
-            ):
+            if not isinstance(case_name, str) or not case_name.strip():
                 raise GraphValidationError(
                     f"benchmark[{index}].name must be a non-empty string"
                 )

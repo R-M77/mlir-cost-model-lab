@@ -6,6 +6,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 TARGET_BOUNDS_BENCHMARK = REPO_ROOT / "benchmarks" / "target_bounds.json"
@@ -277,6 +279,34 @@ def test_invalid_benchmark_input_returns_cli_error(tmp_path: Path) -> None:
     assert result.returncode == 2
     assert result.stdout == ""
     assert "error: benchmark JSON must contain an array" in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("case", "message"),
+    [
+        ({"path": "graph.json"}, "benchmark[0].name is required for object cases"),
+        ({"name": "named_case"}, "benchmark[0].path is required for object cases"),
+        (
+            {"name": None, "path": "graph.json"},
+            "benchmark[0].name must be a non-empty string",
+        ),
+        (
+            {"name": "named_case", "path": "graph.json", "description": "extra"},
+            "benchmark[0] has unsupported field(s): 'description'",
+        ),
+    ],
+)
+def test_malformed_benchmark_object_case_returns_cli_error(
+    tmp_path: Path, case: dict[str, object], message: str
+) -> None:
+    benchmark_path = tmp_path / "benchmark.json"
+    benchmark_path.write_text(json.dumps([case]), encoding="utf-8")
+
+    result = _run_cli("--benchmark", str(benchmark_path))
+
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert result.stderr.strip() == f"error: {message}"
 
 
 def test_malformed_benchmark_json_returns_cli_error(tmp_path: Path) -> None:
@@ -587,6 +617,64 @@ def test_invalid_benchmark_budget_schema_fails_closed(tmp_path: Path) -> None:
     assert result.returncode == 2
     assert result.stdout == ""
     assert "error: invalid budget aggregate.flops must be a finite non-negative number" in result.stderr
+
+
+def test_unreadable_budget_path_returns_cli_error(tmp_path: Path) -> None:
+    budget_path = tmp_path / "budget-directory"
+    budget_path.mkdir()
+
+    result = _run_cli(
+        "--benchmark",
+        str(TARGET_BOUNDS_BENCHMARK),
+        "--budget",
+        str(budget_path),
+    )
+
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert result.stderr.startswith(
+        f"error: invalid budget {budget_path}: could not read file: "
+    )
+
+
+@pytest.mark.parametrize(
+    ("case_limits", "message"),
+    [
+        ([], "invalid budget cases['memory_bound_relu'] must be an object"),
+        (
+            {},
+            "invalid budget cases['memory_bound_relu'] must define at least one metric",
+        ),
+        (
+            {"unknown_metric": 1},
+            "invalid budget cases['memory_bound_relu'] has unsupported metric(s): 'unknown_metric'",
+        ),
+    ],
+)
+def test_invalid_budget_case_entry_schema_fails_closed(
+    tmp_path: Path, case_limits: object, message: str
+) -> None:
+    budget_path = tmp_path / "budget.json"
+    budget_path.write_text(
+        json.dumps(
+            {
+                "aggregate": {"flops": 1_572_864},
+                "cases": {"memory_bound_relu": case_limits},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = _run_cli(
+        "--benchmark",
+        str(TARGET_BOUNDS_BENCHMARK),
+        "--budget",
+        str(budget_path),
+    )
+
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert result.stderr.strip() == f"error: {message}"
 
 
 def test_invalid_utf8_budget_json_returns_cli_error(tmp_path: Path) -> None:
