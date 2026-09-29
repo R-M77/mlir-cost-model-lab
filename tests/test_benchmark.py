@@ -238,6 +238,19 @@ def test_case_selection_requires_benchmark(tmp_path: Path) -> None:
     assert "error: --case requires --benchmark JSON" in result.stderr
 
 
+def test_graph_path_and_benchmark_are_mutually_exclusive(tmp_path: Path) -> None:
+    graph_path = tmp_path / "graph.json"
+    graph_path.write_text(json.dumps(_relu_graph("single_case")), encoding="utf-8")
+
+    result = _run_cli(str(graph_path), "--benchmark", str(TARGET_BOUNDS_BENCHMARK))
+
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert result.stderr.endswith(
+        "error: graph path and --benchmark JSON are mutually exclusive\n"
+    )
+
+
 def test_target_bound_fixture_has_stable_classification_and_aggregate() -> None:
     expected = TARGET_BOUNDS_EXPECTED.read_text(encoding="utf-8")
 
@@ -598,6 +611,46 @@ def test_per_case_budget_violation_is_reported(tmp_path: Path) -> None:
             "scope": "case",
         }
     ]
+
+
+def test_unknown_per_case_budget_name_returns_cli_error(tmp_path: Path) -> None:
+    budget_path = tmp_path / "budget.json"
+    budget_path.write_text(
+        json.dumps(
+            {
+                "aggregate": {"flops": 1_572_864},
+                "cases": {"missing_case": {"flops": 1}},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = _run_cli(
+        "--benchmark",
+        str(TARGET_BOUNDS_BENCHMARK),
+        "--budget",
+        str(budget_path),
+        "--compact",
+    )
+
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert result.stderr == (
+        "error: invalid budget case 'missing_case' must match exactly one benchmark case\n"
+    )
+
+
+def test_budget_requires_benchmark_when_a_graph_is_given(tmp_path: Path) -> None:
+    graph_path = tmp_path / "graph.json"
+    graph_path.write_text(json.dumps(_relu_graph("single_case")), encoding="utf-8")
+    budget_path = tmp_path / "budget.json"
+    budget_path.write_text(json.dumps({"aggregate": {"flops": 2}}), encoding="utf-8")
+
+    result = _run_cli(str(graph_path), "--budget", str(budget_path))
+
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert result.stderr.endswith("error: --budget requires --benchmark JSON\n")
 
 
 def test_invalid_benchmark_budget_schema_fails_closed(tmp_path: Path) -> None:
