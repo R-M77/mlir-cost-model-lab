@@ -13,6 +13,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 TARGET_BOUNDS_BENCHMARK = REPO_ROOT / "benchmarks" / "target_bounds.json"
 TARGET_BOUNDS_EXPECTED = REPO_ROOT / "benchmarks" / "target_bounds.expected.json"
 TARGET_BOUNDS_BUDGET = REPO_ROOT / "benchmarks" / "target_bounds.budget.json"
+LOWERING_GRAPH = REPO_ROOT / "examples" / "matmul_lowering.json"
 
 
 def _run_cli(*args: str) -> subprocess.CompletedProcess[str]:
@@ -651,6 +652,140 @@ def test_budget_requires_benchmark_when_a_graph_is_given(tmp_path: Path) -> None
     assert result.returncode == 2
     assert result.stdout == ""
     assert result.stderr.endswith("error: --budget requires --benchmark JSON\n")
+
+
+@pytest.mark.parametrize(
+    ("args", "message"),
+    [
+        pytest.param(
+            (
+                "--case",
+                "missing_case",
+                "--budget",
+                str(TARGET_BOUNDS_BUDGET),
+                str(LOWERING_GRAPH),
+            ),
+            "--case requires --benchmark JSON",
+            id="case-before-budget-on-single-graph",
+        ),
+        pytest.param(
+            (
+                "--case",
+                "missing_case",
+                "--lowering-mode",
+                "tiled",
+                str(LOWERING_GRAPH),
+            ),
+            "--case requires --benchmark JSON",
+            id="case-before-lowering-mode-on-single-graph",
+        ),
+        pytest.param(
+            ("--case", "missing_case", "--lower-matmul", str(LOWERING_GRAPH)),
+            "--case requires --benchmark JSON",
+            id="case-before-lowering-on-single-graph",
+        ),
+        pytest.param(
+            (
+                "--budget",
+                str(TARGET_BOUNDS_BUDGET),
+                "--lowering-mode",
+                "tiled",
+                str(LOWERING_GRAPH),
+            ),
+            "--lowering-mode requires --lower-matmul",
+            id="lowering-mode-before-budget-on-single-graph",
+        ),
+        pytest.param(
+            ("--budget", str(TARGET_BOUNDS_BUDGET), "--lower-matmul", str(LOWERING_GRAPH)),
+            "--budget requires --benchmark JSON",
+            id="budget-before-lowering-on-single-graph",
+        ),
+        pytest.param(
+            (
+                "--case",
+                "missing_case",
+                "--budget",
+                str(TARGET_BOUNDS_BUDGET),
+                "--lower-matmul",
+                str(LOWERING_GRAPH),
+            ),
+            "--case requires --benchmark JSON",
+            id="case-before-budget-and-lowering-on-single-graph",
+        ),
+        pytest.param(
+            (
+                "--lower-matmul",
+                "--benchmark",
+                str(TARGET_BOUNDS_BENCHMARK),
+                "--case",
+                "compute_bound_matmul",
+                "--budget",
+                str(TARGET_BOUNDS_BUDGET),
+            ),
+            "--lower-matmul requires a single graph path",
+            id="lowering-before-valid-benchmark-options",
+        ),
+        pytest.param(
+            (
+                "--lower-matmul",
+                "--optimize",
+                "--benchmark",
+                str(TARGET_BOUNDS_BENCHMARK),
+                "--case",
+                "compute_bound_matmul",
+                "--budget",
+                str(TARGET_BOUNDS_BUDGET),
+            ),
+            "--lower-matmul requires a single graph path",
+            id="benchmark-before-lowering-optimizer-conflict",
+        ),
+        pytest.param(
+            (
+                "--lowering-mode",
+                "tiled",
+                "--benchmark",
+                str(TARGET_BOUNDS_BENCHMARK),
+                "--case",
+                "compute_bound_matmul",
+                "--budget",
+                str(TARGET_BOUNDS_BUDGET),
+            ),
+            "--lowering-mode requires --lower-matmul",
+            id="lowering-mode-before-valid-benchmark-options",
+        ),
+        pytest.param(
+            (
+                "--lower-matmul",
+                "--optimize",
+                "--budget",
+                str(TARGET_BOUNDS_BUDGET),
+                str(LOWERING_GRAPH),
+            ),
+            "--lower-matmul cannot be combined with --optimize",
+            id="lowering-optimizer-before-budget-on-single-graph",
+        ),
+        pytest.param(
+            (
+                "--lower-matmul",
+                "--tile-size",
+                "0",
+                "--budget",
+                str(TARGET_BOUNDS_BUDGET),
+                str(LOWERING_GRAPH),
+            ),
+            "--tile-size and --vector-width must be positive",
+            id="lowering-parameter-before-budget-on-single-graph",
+        ),
+    ],
+)
+def test_cli_rejection_precedence_matrix(
+    args: tuple[str, ...], message: str
+) -> None:
+    result = _run_cli(*args)
+
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert result.stderr.endswith(f"error: {message}\n")
 
 
 def test_invalid_benchmark_budget_schema_fails_closed(tmp_path: Path) -> None:
