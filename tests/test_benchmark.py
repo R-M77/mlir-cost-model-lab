@@ -499,3 +499,88 @@ def test_targetless_estimated_time_is_optional_but_cannot_be_checked(
     assert rejected.returncode == 2
     assert rejected.stdout == ""
     assert "error: budget aggregate.estimated_time_us is unavailable" in rejected.stderr
+
+
+def test_omit_paths_preserves_report_and_removes_absolute_and_relative_paths(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "relative.json").write_text(
+        json.dumps(_relu_graph("relative_case")), encoding="utf-8"
+    )
+    absolute = tmp_path / "absolute.json"
+    absolute.write_text(json.dumps(_relu_graph("absolute_case")), encoding="utf-8")
+    manifest = tmp_path / "cases.json"
+    manifest.write_text(json.dumps(["relative.json", str(absolute)]), encoding="utf-8")
+
+    for flags in ((), ("--compact",), ("--optimize", "--compact")):
+        original = _run_cli("--benchmark", str(manifest), *flags)
+        omitted = _run_cli("--benchmark", str(manifest), "--omit-paths", *flags)
+        assert original.returncode == omitted.returncode == 0
+        assert original.stderr == omitted.stderr == ""
+        expected = json.loads(original.stdout)
+        for case in expected["cases"]:
+            del case["path"]
+        assert json.loads(omitted.stdout) == expected
+        assert str(absolute) not in omitted.stdout
+        assert "relative.json" not in omitted.stdout
+        # This flag is intentionally not an anonymizer.
+        assert "absolute_case" in omitted.stdout
+        assert '"shape"' in omitted.stdout
+
+
+def test_omit_paths_keeps_case_selection_and_budget_gate_semantics() -> None:
+    args = (
+        "--benchmark", str(TARGET_BOUNDS_BENCHMARK),
+        "--budget", str(TARGET_BOUNDS_BUDGET), "--compact",
+    )
+    original = _run_cli(*args)
+    omitted = _run_cli(*args, "--omit-paths")
+    assert original.returncode == omitted.returncode == 0
+    expected = json.loads(original.stdout)
+    for case in expected["cases"]:
+        del case["path"]
+    assert json.loads(omitted.stdout) == expected
+
+    selected = _run_cli(
+        "--benchmark", str(TARGET_BOUNDS_BENCHMARK),
+        "--case", "compute_bound_matmul", "--omit-paths",
+    )
+    assert selected.returncode == 0
+    report = json.loads(selected.stdout)
+    assert [case["name"] for case in report["cases"]] == ["compute_bound_matmul"]
+    assert "path" not in report["cases"][0]
+    assert report["summary"]["case_count"] == 1
+
+
+def test_omit_paths_also_applies_when_budget_is_exceeded(tmp_path: Path) -> None:
+    budget = tmp_path / "budget.json"
+    budget.write_text(json.dumps({"aggregate": {"flops": 0}}), encoding="utf-8")
+    args = (
+        "--benchmark", str(TARGET_BOUNDS_BENCHMARK),
+        "--budget", str(budget), "--compact",
+    )
+    original = _run_cli(*args)
+    omitted = _run_cli(*args, "--omit-paths")
+    assert original.returncode == omitted.returncode == 2
+    assert original.stderr == omitted.stderr
+    expected = json.loads(original.stdout)
+    for case in expected["cases"]:
+        del case["path"]
+    assert json.loads(omitted.stdout) == expected
+
+
+def test_omit_paths_requires_benchmark() -> None:
+    result = _run_cli("--omit-paths", "examples/matmul_bias_relu.json")
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert "--omit-paths requires --benchmark JSON" in result.stderr
+
+
+def test_omit_paths_does_not_redact_file_error_diagnostics(tmp_path: Path) -> None:
+    missing = tmp_path / "missing-private-graph.json"
+    manifest = tmp_path / "cases.json"
+    manifest.write_text(json.dumps([str(missing)]), encoding="utf-8")
+    result = _run_cli("--benchmark", str(manifest), "--omit-paths")
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert str(missing) in result.stderr
