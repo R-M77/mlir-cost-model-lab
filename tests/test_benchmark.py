@@ -658,6 +658,36 @@ def test_budget_requires_benchmark_when_a_graph_is_given(tmp_path: Path) -> None
     ("args", "message"),
     [
         pytest.param(
+            (),
+            "a graph path or --benchmark JSON is required",
+            id="no-source",
+        ),
+        pytest.param(
+            ("--budget", str(TARGET_BOUNDS_BUDGET)),
+            "a graph path or --benchmark JSON is required",
+            id="budget-without-source",
+        ),
+        pytest.param(
+            ("--lower-matmul",),
+            "a graph path or --benchmark JSON is required",
+            id="lowering-without-graph",
+        ),
+    ],
+)
+def test_cli_source_selection_rejection_matrix(
+    args: tuple[str, ...], message: str
+) -> None:
+    result = _run_cli(*args)
+
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert result.stderr.endswith(f"error: {message}\n")
+
+
+@pytest.mark.parametrize(
+    ("args", "message"),
+    [
+        pytest.param(
             (
                 "--case",
                 "missing_case",
