@@ -139,5 +139,5 @@ robustness coverage described in [privacy guidance](docs/privacy.md).
 
 ## License
 
-The project metadata declares MIT. The copyright holder and a corresponding
-license file should be confirmed before distribution.
+Licensing for this project is undecided. No LICENSE file is included in the
+current source tree.
