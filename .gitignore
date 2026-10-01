@@ -7,3 +7,17 @@ htmlcov/
 build/
 dist/
 .venv/
+
+# Local configuration and credentials (keep deliberately sanitized examples).
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Private graphs and generated reports belong in these local-only directories.
+/private/
+/outputs/
+/reports/
+*.log
+.DS_Store

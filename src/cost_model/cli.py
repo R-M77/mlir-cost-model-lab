@@ -372,6 +372,14 @@ def _build_parser() -> argparse.ArgumentParser:
         help="emit one-line JSON instead of the default readable form",
     )
     parser.add_argument(
+        "--omit-paths",
+        action="store_true",
+        help=(
+            "omit case path fields from benchmark JSON output; "
+            "names, shapes, and error diagnostics are not redacted"
+        ),
+    )
+    parser.add_argument(
         "--optimize",
         action="store_true",
         help="emit an opt-in before/after liveness-aware optimization report",
@@ -407,6 +415,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.case_names and args.benchmark is None:
         parser.error("--case requires --benchmark JSON")
+    if args.omit_paths and args.benchmark is None:
+        parser.error("--omit-paths requires --benchmark JSON")
     if args.lower_matmul and args.benchmark is not None:
         parser.error("--lower-matmul requires a single graph path")
     if args.lower_matmul and args.optimize:
@@ -448,6 +458,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     except GraphValidationError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
+
+    # Presentation-only: do not change case validation, selection, or budgets.
+    # This deliberately does not claim to anonymize graph contents or stderr.
+    if args.omit_paths:
+        for case in report["cases"]:
+            case.pop("path", None)
 
     if args.compact:
         print(json.dumps(report, separators=(",", ":")))
