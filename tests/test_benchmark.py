@@ -296,6 +296,49 @@ def test_invalid_benchmark_input_returns_cli_error(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
+    ("payload", "message"),
+    [
+        pytest.param(
+            [],
+            "benchmark JSON must contain at least one case",
+            id="empty-array",
+        ),
+        pytest.param(
+            [42],
+            "benchmark[0] must be a non-empty string",
+            id="non-string-path",
+        ),
+        pytest.param(
+            ["   "],
+            "benchmark[0] must be a non-empty string",
+            id="blank-path",
+        ),
+        pytest.param(
+            [{"name": "named_case", "path": None}],
+            "benchmark[0].path must be a non-empty string",
+            id="non-string-object-path",
+        ),
+        pytest.param(
+            [{"name": "named_case", "path": " "}],
+            "benchmark[0].path must be a non-empty string",
+            id="blank-object-path",
+        ),
+    ],
+)
+def test_benchmark_manifest_cardinality_and_path_types_return_cli_error(
+    tmp_path: Path, payload: object, message: str
+) -> None:
+    benchmark_path = tmp_path / "benchmark.json"
+    benchmark_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    result = _run_cli("--benchmark", str(benchmark_path))
+
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert result.stderr == f"error: {message}\n"
+
+
+@pytest.mark.parametrize(
     ("case", "message"),
     [
         ({"path": "graph.json"}, "benchmark[0].name is required for object cases"),
