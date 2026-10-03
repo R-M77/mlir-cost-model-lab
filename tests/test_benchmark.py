@@ -861,6 +861,54 @@ def test_cli_rejection_precedence_matrix(
     assert result.stderr.endswith(f"error: {message}\n")
 
 
+@pytest.mark.parametrize(
+    ("payload", "message"),
+    [
+        pytest.param(
+            [],
+            "invalid budget must contain an object",
+            id="non-object-payload",
+        ),
+        pytest.param(
+            {},
+            "invalid budget requires an aggregate object",
+            id="missing-aggregate",
+        ),
+        pytest.param(
+            {"aggregate": []},
+            "invalid budget aggregate must be an object",
+            id="non-object-aggregate",
+        ),
+        pytest.param(
+            {"aggregate": {}},
+            "invalid budget aggregate must define at least one metric",
+            id="empty-aggregate",
+        ),
+        pytest.param(
+            {"aggregate": {"flops": 1}, "unexpected": True},
+            "invalid budget has unsupported field(s): 'unexpected'",
+            id="unsupported-top-level-field",
+        ),
+    ],
+)
+def test_invalid_budget_structure_schema_fails_closed(
+    tmp_path: Path, payload: object, message: str
+) -> None:
+    budget_path = tmp_path / "budget.json"
+    budget_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    result = _run_cli(
+        "--benchmark",
+        str(TARGET_BOUNDS_BENCHMARK),
+        "--budget",
+        str(budget_path),
+    )
+
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert result.stderr == f"error: {message}\n"
+
+
 def test_invalid_benchmark_budget_schema_fails_closed(tmp_path: Path) -> None:
     budget_path = tmp_path / "budget.json"
     budget_path.write_text(
