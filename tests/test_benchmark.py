@@ -1040,3 +1040,66 @@ def test_targetless_estimated_time_is_optional_but_cannot_be_checked(
     assert rejected.returncode == 2
     assert rejected.stdout == ""
     assert "error: budget aggregate.estimated_time_us is unavailable" in rejected.stderr
+
+
+@pytest.mark.parametrize(
+    ("budget", "message"),
+    [
+        pytest.param(
+            {"aggregate": {"flops": True}},
+            "invalid budget aggregate.flops must be a finite non-negative number",
+            id="boolean-true-metric",
+        ),
+        pytest.param(
+            {"aggregate": {"flops": False}},
+            "invalid budget aggregate.flops must be a finite non-negative number",
+            id="boolean-false-metric",
+        ),
+        pytest.param(
+            {"aggregate": {"flops": -1}},
+            "invalid budget aggregate.flops must be a finite non-negative number",
+            id="negative-metric",
+        ),
+        pytest.param(
+            {"aggregate": {"flops": float("nan")}},
+            "invalid budget aggregate.flops must be a finite non-negative number",
+            id="nan-metric",
+        ),
+        pytest.param(
+            {"aggregate": {"flops": float("inf")}},
+            "invalid budget aggregate.flops must be a finite non-negative number",
+            id="positive-infinity-metric",
+        ),
+        pytest.param(
+            {"aggregate": {"flops": float("-inf")}},
+            "invalid budget aggregate.flops must be a finite non-negative number",
+            id="negative-infinity-metric",
+        ),
+        pytest.param(
+            {"aggregate": {"flops": 1}, "cases": []},
+            "invalid budget cases must be an object",
+            id="non-object-cases",
+        ),
+        pytest.param(
+            {"aggregate": {"flops": 1}, "cases": {" ": {"flops": 1}}},
+            "invalid budget case names must be non-empty strings",
+            id="blank-case-name",
+        ),
+    ],
+)
+def test_invalid_budget_validation_edges_fail_closed(
+    tmp_path: Path, budget: dict[str, object], message: str
+) -> None:
+    budget_path = tmp_path / "budget.json"
+    budget_path.write_text(json.dumps(budget), encoding="utf-8")
+
+    result = _run_cli(
+        "--benchmark",
+        str(TARGET_BOUNDS_BENCHMARK),
+        "--budget",
+        str(budget_path),
+    )
+
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert result.stderr == f"error: {message}\n"
