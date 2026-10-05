@@ -626,6 +626,88 @@ def test_benchmark_budget_violation_returns_report_and_json_diagnostic(
     }
 
 
+def test_optimized_fusion_budget_uses_aggregate_and_case_totals(
+    tmp_path: Path,
+) -> None:
+    graph_path = tmp_path / "fusion.json"
+    graph_path.write_text(json.dumps(_fusion_graph()), encoding="utf-8")
+    benchmark_path = tmp_path / "benchmark.json"
+    benchmark_path.write_text(json.dumps(["fusion.json"]), encoding="utf-8")
+    budget_path = tmp_path / "budget.json"
+    budget_path.write_text(
+        json.dumps(
+            {
+                "aggregate": {"logical_bytes": 24},
+                "cases": {"fusion_case": {"logical_bytes": 24}},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = _run_cli(
+        "--benchmark",
+        str(benchmark_path),
+        "--budget",
+        str(budget_path),
+        "--optimize",
+        "--compact",
+    )
+
+    assert result.returncode == 0
+    assert result.stderr == ""
+    payload = json.loads(result.stdout)
+    assert payload["summary"]["totals"]["logical_bytes"] == 24
+    optimized_totals = payload["cases"][0]["report"]["optimized"]["totals"]
+    assert optimized_totals["bytes_read"] + optimized_totals["bytes_written"] == 24
+
+
+def test_optimized_fusion_per_case_budget_violation_preserves_report(
+    tmp_path: Path,
+) -> None:
+    graph_path = tmp_path / "fusion.json"
+    graph_path.write_text(json.dumps(_fusion_graph()), encoding="utf-8")
+    benchmark_path = tmp_path / "benchmark.json"
+    benchmark_path.write_text(json.dumps(["fusion.json"]), encoding="utf-8")
+    budget_path = tmp_path / "budget.json"
+    budget_path.write_text(
+        json.dumps(
+            {
+                "aggregate": {"logical_bytes": 24},
+                "cases": {"fusion_case": {"logical_bytes": 23}},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    baseline = _run_cli(
+        "--benchmark", str(benchmark_path), "--optimize", "--compact"
+    )
+    first = _run_cli(
+        "--benchmark",
+        str(benchmark_path),
+        "--budget",
+        str(budget_path),
+        "--optimize",
+        "--compact",
+    )
+    second = _run_cli(
+        "--benchmark",
+        str(benchmark_path),
+        "--budget",
+        str(budget_path),
+        "--optimize",
+        "--compact",
+    )
+
+    assert baseline.returncode == 0
+    assert first.returncode == second.returncode == 2
+    assert first.stdout == second.stdout == baseline.stdout
+    assert first.stderr == second.stderr == (
+        'error: {"error":"benchmark budget exceeded","violations":'
+        '[{"actual":24,"limit":23,"metric":"logical_bytes","scope":"case"}]}\n'
+    )
+
+
 def test_per_case_budget_violation_is_reported(tmp_path: Path) -> None:
     budget_path = tmp_path / "budget.json"
     budget_path.write_text(
@@ -1002,8 +1084,9 @@ def test_invalid_utf8_budget_json_returns_cli_error(tmp_path: Path) -> None:
     assert result.stderr == "error: invalid budget UTF-8 at byte 0: invalid start byte\n"
 
 
+@pytest.mark.parametrize("optimize", [False, True], ids=["baseline", "optimized"])
 def test_targetless_estimated_time_is_optional_but_cannot_be_checked(
-    tmp_path: Path,
+    tmp_path: Path, optimize: bool
 ) -> None:
     graph_path = tmp_path / "graph.json"
     graph_path.write_text(json.dumps(_relu_graph("targetless")), encoding="utf-8")
@@ -1015,9 +1098,11 @@ def test_targetless_estimated_time_is_optional_but_cannot_be_checked(
         json.dumps({"aggregate": {"flops": 2, "logical_bytes": 16}}),
         encoding="utf-8",
     )
+    optimize_args = ("--optimize",) if optimize else ()
     allowed = _run_cli(
         "--benchmark",
         str(benchmark_path),
+        *optimize_args,
         "--budget",
         str(without_time),
         "--compact",
@@ -1034,12 +1119,38 @@ def test_targetless_estimated_time_is_optional_but_cannot_be_checked(
     rejected = _run_cli(
         "--benchmark",
         str(benchmark_path),
+        *optimize_args,
         "--budget",
         str(with_time),
     )
     assert rejected.returncode == 2
     assert rejected.stdout == ""
-    assert "error: budget aggregate.estimated_time_us is unavailable" in rejected.stderr
+    assert rejected.stderr == (
+        "error: budget aggregate.estimated_time_us is unavailable in the benchmark report\n"
+    )
+
+    per_case_time = tmp_path / "per_case_time.json"
+    per_case_time.write_text(
+        json.dumps(
+            {
+                "aggregate": {"flops": 2},
+                "cases": {"targetless": {"estimated_time_us": 1.0}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    per_case_rejected = _run_cli(
+        "--benchmark",
+        str(benchmark_path),
+        *optimize_args,
+        "--budget",
+        str(per_case_time),
+    )
+    assert per_case_rejected.returncode == 2
+    assert per_case_rejected.stdout == ""
+    assert per_case_rejected.stderr == (
+        "error: budget cases['targetless'].estimated_time_us is unavailable in the benchmark report\n"
+    )
 
 
 @pytest.mark.parametrize(
