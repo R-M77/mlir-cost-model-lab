@@ -708,6 +708,158 @@ def test_optimized_fusion_per_case_budget_violation_preserves_report(
     )
 
 
+def _two_fusion_case_benchmark(tmp_path: Path) -> Path:
+    graph_path = tmp_path / "fusion.json"
+    graph_path.write_text(json.dumps(_fusion_graph()), encoding="utf-8")
+    benchmark_path = tmp_path / "benchmark.json"
+    benchmark_path.write_text(
+        json.dumps(
+            [
+                {"name": "selected_fusion", "path": "fusion.json"},
+                {"name": "unselected_fusion", "path": "fusion.json"},
+            ]
+        ),
+        encoding="utf-8",
+    )
+    return benchmark_path
+
+
+def test_optimized_case_selection_budget_uses_selected_optimized_totals(
+    tmp_path: Path,
+) -> None:
+    benchmark_path = _two_fusion_case_benchmark(tmp_path)
+    budget_path = tmp_path / "budget.json"
+    budget_path.write_text(
+        json.dumps(
+            {
+                "aggregate": {"logical_bytes": 24},
+                "cases": {"selected_fusion": {"logical_bytes": 24}},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = _run_cli(
+        "--benchmark",
+        str(benchmark_path),
+        "--case",
+        "selected_fusion",
+        "--budget",
+        str(budget_path),
+        "--optimize",
+        "--compact",
+    )
+
+    assert result.returncode == 0
+    assert result.stderr == ""
+    payload = json.loads(result.stdout)
+    assert [case["name"] for case in payload["cases"]] == ["selected_fusion"]
+    assert payload["summary"]["case_count"] == 1
+    assert payload["summary"]["totals"]["logical_bytes"] == 24
+    optimized = payload["cases"][0]["report"]["optimized"]
+    assert optimized["bytes_avoided"] == 16
+    assert (
+        optimized["totals"]["bytes_read"] + optimized["totals"]["bytes_written"]
+        == 24
+    )
+
+
+def test_optimized_case_selection_budget_violation_preserves_report(
+    tmp_path: Path,
+) -> None:
+    benchmark_path = _two_fusion_case_benchmark(tmp_path)
+    budget_path = tmp_path / "budget.json"
+    budget_path.write_text(
+        json.dumps(
+            {
+                "aggregate": {"logical_bytes": 24},
+                "cases": {"selected_fusion": {"logical_bytes": 23}},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    baseline = _run_cli(
+        "--benchmark",
+        str(benchmark_path),
+        "--case",
+        "selected_fusion",
+        "--optimize",
+        "--compact",
+    )
+    first = _run_cli(
+        "--benchmark",
+        str(benchmark_path),
+        "--case",
+        "selected_fusion",
+        "--budget",
+        str(budget_path),
+        "--optimize",
+        "--compact",
+    )
+    second = _run_cli(
+        "--benchmark",
+        str(benchmark_path),
+        "--case",
+        "selected_fusion",
+        "--budget",
+        str(budget_path),
+        "--optimize",
+        "--compact",
+    )
+
+    assert baseline.returncode == 0
+    assert first.returncode == second.returncode == 2
+    assert first.stdout == second.stdout == baseline.stdout
+    assert first.stderr == second.stderr == (
+        'error: {"error":"benchmark budget exceeded","violations":'
+        '[{"actual":24,"limit":23,"metric":"logical_bytes","scope":"case"}]}\n'
+    )
+
+
+def test_optimized_case_selection_rejects_unselected_case_budget_deterministically(
+    tmp_path: Path,
+) -> None:
+    benchmark_path = _two_fusion_case_benchmark(tmp_path)
+    budget_path = tmp_path / "budget.json"
+    budget_path.write_text(
+        json.dumps(
+            {
+                "aggregate": {"logical_bytes": 24},
+                "cases": {"unselected_fusion": {"logical_bytes": 24}},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    first = _run_cli(
+        "--benchmark",
+        str(benchmark_path),
+        "--case",
+        "selected_fusion",
+        "--budget",
+        str(budget_path),
+        "--optimize",
+        "--compact",
+    )
+    second = _run_cli(
+        "--benchmark",
+        str(benchmark_path),
+        "--case",
+        "selected_fusion",
+        "--budget",
+        str(budget_path),
+        "--optimize",
+        "--compact",
+    )
+
+    assert first.returncode == second.returncode == 2
+    assert first.stdout == second.stdout == ""
+    assert first.stderr == second.stderr == (
+        "error: invalid budget case 'unselected_fusion' must match exactly one benchmark case\n"
+    )
+
+
 def test_per_case_budget_violation_is_reported(tmp_path: Path) -> None:
     budget_path = tmp_path / "budget.json"
     budget_path.write_text(
