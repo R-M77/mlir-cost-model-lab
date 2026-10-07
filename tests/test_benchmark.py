@@ -724,6 +724,27 @@ def _two_fusion_case_benchmark(tmp_path: Path) -> Path:
     return benchmark_path
 
 
+def _targeted_two_fusion_case_benchmark(tmp_path: Path) -> Path:
+    graph = _fusion_graph()
+    graph["target"] = {
+        "peak_compute_gflops": 1000.0,
+        "memory_bandwidth_gbps": 100.0,
+    }
+    graph_path = tmp_path / "targeted_fusion.json"
+    graph_path.write_text(json.dumps(graph), encoding="utf-8")
+    benchmark_path = tmp_path / "targeted_benchmark.json"
+    benchmark_path.write_text(
+        json.dumps(
+            [
+                {"name": "selected_fusion", "path": graph_path.name},
+                {"name": "unselected_fusion", "path": graph_path.name},
+            ]
+        ),
+        encoding="utf-8",
+    )
+    return benchmark_path
+
+
 def test_optimized_case_selection_budget_uses_selected_optimized_totals(
     tmp_path: Path,
 ) -> None:
@@ -852,6 +873,130 @@ def test_optimized_case_selection_rejects_unselected_case_budget_deterministical
         "--optimize",
         "--compact",
     )
+
+    assert first.returncode == second.returncode == 2
+    assert first.stdout == second.stdout == ""
+    assert first.stderr == second.stderr == (
+        "error: invalid budget case 'unselected_fusion' must match exactly one benchmark case\n"
+    )
+
+
+def test_optimized_target_case_selection_estimated_time_budget_passes(
+    tmp_path: Path,
+) -> None:
+    benchmark_path = _targeted_two_fusion_case_benchmark(tmp_path)
+    budget_path = tmp_path / "budget.json"
+    budget_path.write_text(
+        json.dumps(
+            {
+                "aggregate": {"estimated_time_us": 0.0003},
+                "cases": {"selected_fusion": {"estimated_time_us": 0.0003}},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = _run_cli(
+        "--benchmark",
+        str(benchmark_path),
+        "--case",
+        "selected_fusion",
+        "--budget",
+        str(budget_path),
+        "--optimize",
+        "--compact",
+    )
+
+    assert result.returncode == 0
+    assert result.stderr == ""
+    payload = json.loads(result.stdout)
+    assert [case["name"] for case in payload["cases"]] == ["selected_fusion"]
+    case_report = payload["cases"][0]["report"]
+    assert case_report["baseline"]["totals"]["roofline"]["estimated_time_us"] == 0.0004
+    assert case_report["optimized"]["target"] == {
+        "peak_compute_gflops": 1000.0,
+        "memory_bandwidth_gbps": 100.0,
+    }
+    assert case_report["optimized"]["totals"]["roofline"]["estimated_time_us"] == 0.00024
+    assert payload["summary"]["totals"]["estimated_time_us"] == 0.00024
+    assert payload["summary"]["totals"]["estimated_time_us"] <= 0.0003
+    assert case_report["optimized"]["totals"]["roofline"]["estimated_time_us"] <= 0.0003
+
+
+@pytest.mark.parametrize(
+    ("aggregate_limit", "case_limit", "scope"),
+    [
+        pytest.param(0.00023, 0.0003, "aggregate", id="aggregate-time"),
+        pytest.param(0.0003, 0.00023, "case", id="per-case-time"),
+    ],
+)
+def test_optimized_target_case_selection_estimated_time_violation_preserves_report(
+    tmp_path: Path,
+    aggregate_limit: float,
+    case_limit: float,
+    scope: str,
+) -> None:
+    benchmark_path = _targeted_two_fusion_case_benchmark(tmp_path)
+    budget_path = tmp_path / "budget.json"
+    budget_path.write_text(
+        json.dumps(
+            {
+                "aggregate": {"estimated_time_us": aggregate_limit},
+                "cases": {"selected_fusion": {"estimated_time_us": case_limit}},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    args = (
+        "--benchmark",
+        str(benchmark_path),
+        "--case",
+        "selected_fusion",
+        "--optimize",
+        "--compact",
+    )
+    unbudgeted = _run_cli(*args)
+    first = _run_cli(*args[:-1], "--budget", str(budget_path), args[-1])
+    second = _run_cli(*args[:-1], "--budget", str(budget_path), args[-1])
+
+    assert unbudgeted.returncode == 0
+    assert first.returncode == second.returncode == 2
+    assert first.stdout == second.stdout == unbudgeted.stdout
+    assert first.stderr == second.stderr == (
+        "error: {\"error\":\"benchmark budget exceeded\",\"violations\":"
+        f"[{{\"actual\":0.00024,\"limit\":{json.dumps(aggregate_limit if scope == 'aggregate' else case_limit)},"
+        f"\"metric\":\"estimated_time_us\",\"scope\":\"{scope}\"}}]}}\n"
+    )
+
+
+def test_optimized_target_case_selection_rejects_unselected_time_budget_deterministically(
+    tmp_path: Path,
+) -> None:
+    benchmark_path = _targeted_two_fusion_case_benchmark(tmp_path)
+    budget_path = tmp_path / "budget.json"
+    budget_path.write_text(
+        json.dumps(
+            {
+                "aggregate": {"estimated_time_us": 0.0003},
+                "cases": {"unselected_fusion": {"estimated_time_us": 0.0003}},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    args = (
+        "--benchmark",
+        str(benchmark_path),
+        "--case",
+        "selected_fusion",
+        "--budget",
+        str(budget_path),
+        "--optimize",
+        "--compact",
+    )
+    first = _run_cli(*args)
+    second = _run_cli(*args)
 
     assert first.returncode == second.returncode == 2
     assert first.stdout == second.stdout == ""
