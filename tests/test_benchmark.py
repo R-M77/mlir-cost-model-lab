@@ -1005,6 +1005,126 @@ def test_optimized_target_case_selection_rejects_unselected_time_budget_determin
     )
 
 
+def test_optimized_multi_case_target_estimated_time_sums_and_passes_at_budget_boundary(
+    tmp_path: Path,
+) -> None:
+    benchmark_path = _targeted_two_fusion_case_benchmark(tmp_path)
+    budget_path = tmp_path / "budget.json"
+    budget_path.write_text(
+        json.dumps(
+            {
+                "aggregate": {"estimated_time_us": 0.00048},
+                "cases": {
+                    "selected_fusion": {"estimated_time_us": 0.00024},
+                    "unselected_fusion": {"estimated_time_us": 0.00024},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    args = (
+        "--benchmark",
+        str(benchmark_path),
+        "--case",
+        "unselected_fusion",
+        "--case",
+        "selected_fusion",
+        "--budget",
+        str(budget_path),
+        "--optimize",
+        "--compact",
+    )
+    first = _run_cli(*args)
+    second = _run_cli(*args)
+
+    assert first.returncode == second.returncode == 0
+    assert first.stderr == second.stderr == ""
+    assert first.stdout == second.stdout
+    payload = json.loads(first.stdout)
+    assert [case["name"] for case in payload["cases"]] == [
+        "selected_fusion",
+        "unselected_fusion",
+    ]
+    optimized_times = [
+        case["report"]["optimized"]["totals"]["roofline"]["estimated_time_us"]
+        for case in payload["cases"]
+    ]
+    assert optimized_times == [0.00024, 0.00024]
+    assert payload["summary"]["totals"]["estimated_time_us"] == 0.00048
+
+
+def test_optimized_mixed_target_case_selection_fails_closed_for_aggregate_time(
+    tmp_path: Path,
+) -> None:
+    targeted_graph = _fusion_graph()
+    targeted_graph["target"] = {
+        "peak_compute_gflops": 1000.0,
+        "memory_bandwidth_gbps": 100.0,
+    }
+    targeted_graph_path = tmp_path / "targeted_fusion.json"
+    targeted_graph_path.write_text(json.dumps(targeted_graph), encoding="utf-8")
+    targetless_graph_path = tmp_path / "targetless_fusion.json"
+    targetless_graph_path.write_text(json.dumps(_fusion_graph()), encoding="utf-8")
+    benchmark_path = tmp_path / "mixed_benchmark.json"
+    benchmark_path.write_text(
+        json.dumps(
+            [
+                {"name": "target_fusion", "path": targeted_graph_path.name},
+                {"name": "targetless_fusion", "path": targetless_graph_path.name},
+            ]
+        ),
+        encoding="utf-8",
+    )
+    selection_args = (
+        "--benchmark",
+        str(benchmark_path),
+        "--case",
+        "targetless_fusion",
+        "--case",
+        "target_fusion",
+    )
+
+    first = _run_cli(*selection_args, "--optimize", "--compact")
+    second = _run_cli(*selection_args, "--optimize", "--compact")
+
+    assert first.returncode == second.returncode == 0
+    assert first.stderr == second.stderr == ""
+    assert first.stdout == second.stdout
+    payload = json.loads(first.stdout)
+    assert [case["name"] for case in payload["cases"]] == [
+        "target_fusion",
+        "targetless_fusion",
+    ]
+    assert payload["summary"]["totals"]["estimated_time_us"] is None
+
+    budget_path = tmp_path / "time_budget.json"
+    budget_path.write_text(
+        json.dumps({"aggregate": {"estimated_time_us": 1.0}}),
+        encoding="utf-8",
+    )
+    first_budgeted = _run_cli(
+        *selection_args,
+        "--budget",
+        str(budget_path),
+        "--optimize",
+        "--compact",
+    )
+    second_budgeted = _run_cli(
+        *selection_args,
+        "--budget",
+        str(budget_path),
+        "--optimize",
+        "--compact",
+    )
+
+    assert first_budgeted.returncode == second_budgeted.returncode == 2
+    assert first_budgeted.stdout == second_budgeted.stdout == ""
+    assert first_budgeted.stderr == second_budgeted.stderr == (
+        "error: budget aggregate.estimated_time_us is unavailable in the benchmark report\n"
+    )
+
+
 def test_per_case_budget_violation_is_reported(tmp_path: Path) -> None:
     budget_path = tmp_path / "budget.json"
     budget_path.write_text(
