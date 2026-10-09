@@ -1125,6 +1125,60 @@ def test_optimized_mixed_target_case_selection_fails_closed_for_aggregate_time(
     )
 
 
+@pytest.mark.parametrize("optimize", [False, True], ids=["baseline", "optimized"])
+def test_mixed_target_and_targetless_per_case_time_budget_fails_closed(
+    tmp_path: Path, optimize: bool
+) -> None:
+    targeted_graph = _fusion_graph()
+    targeted_graph["target"] = {
+        "peak_compute_gflops": 1000.0,
+        "memory_bandwidth_gbps": 100.0,
+    }
+    targeted_graph_path = tmp_path / "targeted_fusion.json"
+    targeted_graph_path.write_text(json.dumps(targeted_graph), encoding="utf-8")
+    targetless_graph_path = tmp_path / "targetless_fusion.json"
+    targetless_graph_path.write_text(json.dumps(_fusion_graph()), encoding="utf-8")
+    benchmark_path = tmp_path / "mixed_benchmark.json"
+    benchmark_path.write_text(
+        json.dumps(
+            [
+                {"name": "target_fusion", "path": targeted_graph_path.name},
+                {"name": "targetless_fusion", "path": targetless_graph_path.name},
+            ]
+        ),
+        encoding="utf-8",
+    )
+    budget_path = tmp_path / "case_time_budget.json"
+    budget_path.write_text(
+        json.dumps(
+            {
+                "aggregate": {"flops": 100},
+                "cases": {"targetless_fusion": {"estimated_time_us": 1.0}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    optimize_args = ("--optimize",) if optimize else ()
+    args = (
+        "--benchmark",
+        str(benchmark_path),
+        *optimize_args,
+        "--budget",
+        str(budget_path),
+        "--compact",
+    )
+
+    first = _run_cli(*args)
+    second = _run_cli(*args)
+
+    assert first.returncode == second.returncode == 2
+    assert first.stdout == second.stdout == ""
+    assert first.stderr == second.stderr == (
+        "error: budget cases['targetless_fusion'].estimated_time_us is unavailable "
+        "in the benchmark report\n"
+    )
+
+
 def test_per_case_budget_violation_is_reported(tmp_path: Path) -> None:
     budget_path = tmp_path / "budget.json"
     budget_path.write_text(
