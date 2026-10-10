@@ -143,6 +143,88 @@ def test_benchmark_optimize_aggregates_optimized_totals(tmp_path: Path) -> None:
     }
 
 
+def test_benchmark_omit_paths_compact_removes_only_paths_and_preserves_default() -> None:
+    baseline = _run_cli("--benchmark", str(TARGET_BOUNDS_BENCHMARK), "--compact")
+    omitted = _run_cli(
+        "--benchmark",
+        str(TARGET_BOUNDS_BENCHMARK),
+        "--compact",
+        "--omit-paths",
+    )
+
+    assert baseline.returncode == omitted.returncode == 0
+    assert baseline.stderr == omitted.stderr == ""
+    assert baseline.stdout == TARGET_BOUNDS_EXPECTED.read_text(encoding="utf-8")
+
+    expected = json.loads(baseline.stdout)
+    expected["cases"] = [
+        {key: value for key, value in case.items() if key != "path"}
+        for case in expected["cases"]
+    ]
+    assert omitted.stdout == json.dumps(expected, separators=(",", ":")) + "\n"
+    assert all("path" not in case for case in json.loads(omitted.stdout)["cases"])
+
+
+def test_benchmark_omit_paths_readable_output_removes_only_case_paths() -> None:
+    result = _run_cli(
+        "--benchmark", str(TARGET_BOUNDS_BENCHMARK), "--omit-paths"
+    )
+
+    assert result.returncode == 0
+    assert result.stderr == ""
+    assert result.stdout.startswith("{\n")
+    expected = json.loads(TARGET_BOUNDS_EXPECTED.read_text(encoding="utf-8"))
+    expected["cases"] = [
+        {key: value for key, value in case.items() if key != "path"}
+        for case in expected["cases"]
+    ]
+    assert result.stdout == json.dumps(expected, indent=2) + "\n"
+
+
+def test_omit_paths_requires_benchmark() -> None:
+    result = _run_cli("--omit-paths", str(LOWERING_GRAPH))
+
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert result.stderr.endswith(
+        "error: --omit-paths requires --benchmark JSON\n"
+    )
+
+
+def test_omit_paths_does_not_redact_benchmark_error_diagnostics(
+    tmp_path: Path,
+) -> None:
+    graph_path = tmp_path / "private inputs" / "missing graph.json"
+    benchmark_path = tmp_path / "benchmark.json"
+    benchmark_path.write_text(
+        json.dumps([{"name": "local_case", "path": str(graph_path)}]),
+        encoding="utf-8",
+    )
+
+    result = _run_cli("--benchmark", str(benchmark_path), "--omit-paths")
+
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert result.stderr.startswith(
+        f"error: benchmark case 'local_case': could not read graph {graph_path}: "
+    )
+
+
+def test_benchmark_omit_paths_is_deterministic() -> None:
+    args = (
+        "--benchmark",
+        str(TARGET_BOUNDS_BENCHMARK),
+        "--compact",
+        "--omit-paths",
+    )
+    first = _run_cli(*args)
+    second = _run_cli(*args)
+
+    assert first.returncode == second.returncode == 0
+    assert first.stderr == second.stderr == ""
+    assert first.stdout == second.stdout
+
+
 def test_benchmark_case_selection_is_repeatable_and_preserves_original_order() -> None:
     result = _run_cli(
         "--benchmark",
@@ -743,6 +825,54 @@ def _targeted_two_fusion_case_benchmark(tmp_path: Path) -> Path:
         encoding="utf-8",
     )
     return benchmark_path
+
+
+def test_omit_paths_preserves_selected_optimized_budget_gates_and_report(
+    tmp_path: Path,
+) -> None:
+    benchmark_path = _two_fusion_case_benchmark(tmp_path)
+    budget_path = tmp_path / "budget.json"
+    budget_path.write_text(
+        json.dumps(
+            {
+                "aggregate": {"logical_bytes": 24},
+                "cases": {"selected_fusion": {"logical_bytes": 24}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    args = (
+        "--benchmark",
+        str(benchmark_path),
+        "--case",
+        "selected_fusion",
+        "--optimize",
+        "--compact",
+        "--omit-paths",
+    )
+
+    passing = _run_cli(*args, "--budget", str(budget_path))
+    assert passing.returncode == 0
+    assert passing.stderr == ""
+    passed_report = json.loads(passing.stdout)
+    assert [case["name"] for case in passed_report["cases"]] == ["selected_fusion"]
+    assert all("path" not in case for case in passed_report["cases"])
+    assert passed_report["summary"]["totals"]["logical_bytes"] == 24
+    optimized_totals = passed_report["cases"][0]["report"]["optimized"]["totals"]
+    assert optimized_totals["bytes_read"] + optimized_totals["bytes_written"] == 24
+
+    budget = json.loads(budget_path.read_text(encoding="utf-8"))
+    budget["cases"]["selected_fusion"]["logical_bytes"] = 23
+    budget_path.write_text(json.dumps(budget), encoding="utf-8")
+    violating = _run_cli(*args, "--budget", str(budget_path))
+
+    assert violating.returncode == 2
+    assert violating.stdout == passing.stdout
+    assert all("path" not in case for case in json.loads(violating.stdout)["cases"])
+    assert violating.stderr == (
+        'error: {"error":"benchmark budget exceeded","violations":'
+        '[{"actual":24,"limit":23,"metric":"logical_bytes","scope":"case"}]}\n'
+    )
 
 
 def test_optimized_case_selection_budget_uses_selected_optimized_totals(

@@ -374,6 +374,11 @@ def _build_parser() -> argparse.ArgumentParser:
         help="run a batch from a JSON array of graph paths or named cases",
     )
     parser.add_argument(
+        "--omit-paths",
+        action="store_true",
+        help="omit case input paths from benchmark JSON output",
+    )
+    parser.add_argument(
         "--case",
         dest="case_names",
         action="append",
@@ -427,6 +432,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.case_names and args.benchmark is None:
         parser.error("--case requires --benchmark JSON")
+    if args.omit_paths and args.benchmark is None:
+        parser.error("--omit-paths requires --benchmark JSON")
     if args.lower_matmul and args.benchmark is not None:
         parser.error("--lower-matmul requires a single graph path")
     if args.lower_matmul and args.optimize:
@@ -469,10 +476,20 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
+    output_report = report
+    if args.omit_paths:
+        output_report = {
+            **report,
+            "cases": [
+                {key: value for key, value in case.items() if key != "path"}
+                for case in report["cases"]
+            ],
+        }
+
     if args.compact:
-        print(json.dumps(report, separators=(",", ":")))
+        print(json.dumps(output_report, separators=(",", ":")))
     else:
-        print(json.dumps(report, indent=2))
+        print(json.dumps(output_report, indent=2))
     if violations:
         print(f"error: {_budget_diagnostic(violations)}", file=sys.stderr)
         return 2

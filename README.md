@@ -80,6 +80,8 @@ PYTHONPATH=src python -m cost_model \
 
 `--case` is valid only with `--benchmark`; names must match exactly, and an unknown name is an error. When `--budget` is also supplied, aggregate and per-case limits are checked against the selected report, so budget case entries must name selected cases.
 
+Use `--omit-paths` to remove only the `path` field from each `cases[*]` entry in benchmark JSON output. It works with readable or compact output, selection, optimization, and budgets; validation and budget checks still run before paths are omitted. Local paths may expose usernames or project names, and this flag is not anonymization—see [Privacy](docs/privacy.md).
+
 Batch output keeps each report under `cases[*].report` and adds an aggregate `summary`:
 
 ```json
