@@ -55,6 +55,7 @@ def _applied_fusions(
     consumers: Counter[str] = Counter(
         input_name
         for operation in graph.operations
+        if operation.name in live_names
         for input_name in operation.inputs
     )
     fusions: list[dict[str, Any]] = []
@@ -74,7 +75,7 @@ def _applied_fusions(
                 "consumer": consumer.name,
                 "intermediate": intermediate,
                 "bytes_avoided": 2 * graph.values[intermediate].nbytes,
-                "reason": "adjacent elementwise operations with a single-use intermediate",
+                "reason": "adjacent elementwise operations with a single live use",
             }
         )
     return fusions

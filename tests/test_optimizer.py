@@ -60,7 +60,7 @@ def test_example_optimizer_fuses_live_pair_and_recomputes_roofline() -> None:
             "consumer": "relu",
             "intermediate": "biased",
             "bytes_avoided": 64,
-            "reason": "adjacent elementwise operations with a single-use intermediate",
+            "reason": "adjacent elementwise operations with a single live use",
         }
     ]
     assert optimized["eliminated_dead_operations"] == []
@@ -108,6 +108,51 @@ def test_multiple_consumers_are_not_fused() -> None:
             {"name": "right", "op": "mul", "inputs": ["intermediate", "z"], "outputs": ["right_out"]},
         ],
         ["left_out", "right_out"],
+    )
+
+    report = optimize_graph(parse_graph(payload))
+    assert report["optimized"]["applied_fusions"] == []
+
+
+def test_dead_consumer_does_not_block_live_fusion() -> None:
+    payload = _graph(
+        [
+            {"name": "add", "op": "add", "inputs": ["x", "y"], "outputs": ["mid"]},
+            {"name": "relu", "op": "relu", "inputs": ["mid"], "outputs": ["output"]},
+            {"name": "dead_use", "op": "mul", "inputs": ["mid", "z"], "outputs": ["unused"]},
+        ],
+        ["output"],
+    )
+
+    report = optimize_graph(parse_graph(payload))
+    optimized = report["optimized"]
+
+    assert report["baseline"]["totals"]["flops"] == 6
+    assert report["baseline"]["totals"]["bytes_read"] == 40
+    assert report["baseline"]["totals"]["bytes_written"] == 24
+    assert optimized["eliminated_dead_operations"] == ["dead_use"]
+    assert optimized["applied_fusions"] == [
+        {
+            "producer": "add",
+            "consumer": "relu",
+            "intermediate": "mid",
+            "bytes_avoided": 16,
+            "reason": "adjacent elementwise operations with a single live use",
+        }
+    ]
+    assert optimized["bytes_avoided"] == 16
+    assert optimized["totals"]["flops"] == 4
+    assert optimized["totals"]["bytes_read"] == 16
+    assert optimized["totals"]["bytes_written"] == 8
+
+
+def test_repeated_live_input_references_still_block_fusion() -> None:
+    payload = _graph(
+        [
+            {"name": "producer", "op": "add", "inputs": ["x", "y"], "outputs": ["intermediate"]},
+            {"name": "consumer", "op": "mul", "inputs": ["intermediate", "intermediate"], "outputs": ["output"]},
+        ],
+        ["output"],
     )
 
     report = optimize_graph(parse_graph(payload))
