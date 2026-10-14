@@ -11,7 +11,8 @@ from typing import Any
 
 from .models import DTYPE_BYTES, Graph, Operation, Target, Tensor
 
-SUPPORTED_OPS = frozenset({"add", "matmul", "mul", "relu"})
+SUPPORTED_OPS = frozenset({"add", "matmul", "mul", "relu", "softmax"})
+FLOAT_DTYPES = frozenset({"f16", "bf16", "f32", "f64"})
 
 
 class GraphValidationError(ValueError):
@@ -112,6 +113,19 @@ def _infer_output(kind: str, inputs: tuple[Tensor, ...], output_name: str) -> Te
             raise GraphValidationError("matmul inputs must have the same dtype")
         return Tensor(output_name, (lhs.shape[0], rhs.shape[1]), lhs.dtype)
 
+    if kind == "softmax":
+        (source,) = inputs
+        if not source.shape:
+            raise GraphValidationError(
+                "softmax requires an input tensor of rank at least 1"
+            )
+        if source.dtype not in FLOAT_DTYPES:
+            raise GraphValidationError(
+                "softmax requires a floating-point input dtype "
+                "(f16, bf16, f32, or f64)"
+            )
+        return Tensor(output_name, source.shape, source.dtype)
+
     if kind in {"add", "mul"}:
         lhs, rhs = inputs
         if lhs.dtype != rhs.dtype:
@@ -122,7 +136,7 @@ def _infer_output(kind: str, inputs: tuple[Tensor, ...], output_name: str) -> Te
             raise GraphValidationError(f"{kind} inputs cannot be broadcast together") from exc
         return Tensor(output_name, output_shape, lhs.dtype)
 
-    # relu is the only unary operation in this first slice.
+    # relu preserves its input shape and dtype.
     (source,) = inputs
     return Tensor(output_name, source.shape, source.dtype)
 
@@ -167,7 +181,7 @@ def parse_graph(payload: Mapping[str, Any]) -> Graph:
             raise GraphValidationError(
                 f"ops[{index}] unsupported operation {kind!r}; use one of {supported}"
             )
-        expected_inputs = 1 if kind == "relu" else 2
+        expected_inputs = 1 if kind in {"relu", "softmax"} else 2
         input_names = _parse_value_names(op.get("inputs"), f"ops[{index}].inputs", expected_inputs)
         output_names = _parse_value_names(op.get("outputs"), f"ops[{index}].outputs", 1)
         output_name = output_names[0]

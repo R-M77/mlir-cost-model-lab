@@ -42,6 +42,20 @@ EXAMPLE_GRAPH = {
     "outputs": ["output"],
 }
 
+SOFTMAX_GRAPH = {
+    "name": "last_axis_softmax",
+    "inputs": {"source": {"shape": [2, 4], "dtype": "f32"}},
+    "ops": [
+        {
+            "name": "softmax",
+            "op": "softmax",
+            "inputs": ["source"],
+            "outputs": ["result"],
+        }
+    ],
+    "outputs": ["result"],
+}
+
 
 def test_estimates_per_op_totals_and_fusion_opportunity() -> None:
     report = analyze_graph(EXAMPLE_GRAPH)
@@ -107,6 +121,99 @@ def test_estimates_per_op_totals_and_fusion_opportunity() -> None:
             }
         ],
     }
+
+
+@pytest.mark.parametrize(
+    ("dtype", "expected_bytes"),
+    [("f16", 16), ("bf16", 16), ("f32", 32), ("f64", 64)],
+)
+def test_softmax_preserves_shape_dtype_and_reports_last_axis_cost(
+    dtype: str, expected_bytes: int
+) -> None:
+    payload = deepcopy(SOFTMAX_GRAPH)
+    payload["inputs"]["source"]["dtype"] = dtype
+
+    report = analyze_graph(payload)
+
+    assert report["ops"][0]["shape"] == [2, 4]
+    assert report["ops"][0]["dtype"] == dtype
+    assert report["ops"][0]["flops"] == 36
+    assert report["ops"][0]["bytes_read"] == expected_bytes
+    assert report["ops"][0]["bytes_written"] == expected_bytes
+    assert report["fusion"] == {"count": 0, "candidates": []}
+
+
+def test_softmax_counts_all_leading_dimensions_as_rows() -> None:
+    payload = deepcopy(SOFTMAX_GRAPH)
+    payload["inputs"]["source"]["shape"] = [2, 3, 4]
+
+    report = analyze_graph(payload)
+
+    assert report["ops"][0]["shape"] == [2, 3, 4]
+    assert report["ops"][0]["flops"] == 108
+
+
+@pytest.mark.parametrize("dtype", ["bool", "i8", "u8", "i32", "i64"])
+def test_softmax_rejects_non_floating_input_dtypes(dtype: str) -> None:
+    payload = deepcopy(SOFTMAX_GRAPH)
+    payload["inputs"]["source"]["dtype"] = dtype
+
+    with pytest.raises(
+        GraphValidationError,
+        match="softmax requires a floating-point input dtype",
+    ):
+        analyze_graph(payload)
+
+
+def test_softmax_rejects_rank_zero_input() -> None:
+    payload = deepcopy(SOFTMAX_GRAPH)
+    payload["inputs"]["source"]["shape"] = []
+
+    with pytest.raises(
+        GraphValidationError,
+        match="softmax requires an input tensor of rank at least 1",
+    ):
+        analyze_graph(payload)
+
+
+@pytest.mark.parametrize("input_names", [[], ["source", "source"]])
+def test_softmax_requires_exactly_one_input(input_names: list[str]) -> None:
+    payload = deepcopy(SOFTMAX_GRAPH)
+    payload["ops"][0]["inputs"] = input_names
+
+    with pytest.raises(GraphValidationError, match="must contain exactly 1 value names"):
+        analyze_graph(payload)
+
+
+def test_default_cli_accepts_softmax_deterministically(tmp_path: Path) -> None:
+    graph_path = tmp_path / "softmax.json"
+    graph_path.write_text(json.dumps(SOFTMAX_GRAPH), encoding="utf-8")
+    env = {**os.environ, "PYTHONPATH": "src"}
+
+    first = subprocess.run(
+        [sys.executable, "-m", "cost_model", str(graph_path)],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+    )
+    second = subprocess.run(
+        [sys.executable, "-m", "cost_model", str(graph_path)],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+    )
+
+    assert first.returncode == second.returncode == 0
+    assert first.stderr == second.stderr == ""
+    assert first.stdout == second.stdout
+    report = json.loads(first.stdout)
+    assert report["ops"][0]["shape"] == [2, 4]
+    assert report["ops"][0]["flops"] == 36
+    assert report["ops"][0]["bytes_read"] == 32
+    assert report["ops"][0]["bytes_written"] == 32
+    assert report["fusion"] == {"count": 0, "candidates": []}
 
 
 def test_graph_can_be_loaded_from_json_file(tmp_path: Path) -> None:

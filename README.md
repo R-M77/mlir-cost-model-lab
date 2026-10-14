@@ -274,7 +274,7 @@ A graph has a name, named tensor inputs, a source-ordered list of single-output 
 }
 ```
 
-Supported operations are `matmul`, `add`, `mul`, and `relu`. Supported dtypes include `f16`, `bf16`, `f32`, `f64`, `bool`, `i8`, `u8`, `i32`, and `i64`.
+Supported operations are `matmul`, `add`, `mul`, `relu`, and last-axis `softmax`. Softmax is unary, preserves the input shape and dtype, and requires rank at least 1 with dtype `f16`, `bf16`, `f32`, or `f64`. Supported dtypes for other operations include `bool`, `i8`, `u8`, `i32`, and `i64` as well.
 
 The optional `target` values are decimal rates: `peak_compute_gflops` is peak compute throughput in GFLOP/s, and `memory_bandwidth_gbps` is memory bandwidth in GB/s. Both fields are required when `target` is an object and must be positive, finite JSON numbers; booleans, strings, zero, negative values, `NaN`, and infinity are rejected. An omitted or explicit `null` target disables roofline analysis. In that case the report emits `"target": null` and `"roofline": null` for every operation and for `totals`; it never invents hardware defaults.
 
@@ -282,6 +282,7 @@ The optional `target` values are decimal rates: `peak_compute_gflops` is peak co
 
 - **Matmul FLOPs:** `2 × M × K × N`, counting one multiply and one add per output reduction term.
 - **Elementwise FLOPs:** one scalar operation per output element. `relu` counts its scalar comparison as one operation so it remains visible in the report; this is a modeling convention, not a hardware claim.
+- **Softmax scalar operation equivalents:** for each row of last-axis width `K`, `(K - 1)` max comparisons, `K` subtractions, `K` exponentials, `(K - 1)` sum additions, and `K` divisions are counted, for `5 × K - 2` equivalents per row. The count is multiplied by the product of all leading dimensions. This convention assigns one equivalent to each exponential; it is not a literal hardware FLOP count or runtime estimate.
 - **Bytes read:** the sum of the storage size of each input value referenced by the operation.
 - **Bytes written:** the storage size of the operation's output value.
 - **Arithmetic intensity:** `FLOPs / (bytes read + bytes written)`, in FLOPs/byte. Zero traffic would produce `0.0` rather than a division error.
@@ -314,6 +315,7 @@ The legality scope is intentionally explicit: this IR has no side-effect, layout
 
 - Static, fully known positive dimensions only; no symbolic shapes or runtime shape guards.
 - `matmul` accepts rank-2 tensors and requires matching dtypes.
+- `softmax` operates only on the final axis of rank-1-or-higher floating-point tensors; its scalar operation-equivalent count treats each exponential as one unit and does not model implementation-specific numerical or hardware costs.
 - Elementwise broadcasting follows a small trailing-dimension rule; there is no layout or stride model.
 - Every operation has exactly one output, and operations are already topologically ordered.
 - Byte traffic is logical tensor storage traffic. It does not model cache reuse, tiling, alignment, transfers, or aliasing; the roofline memory term uses the full logical read-plus-write total.
