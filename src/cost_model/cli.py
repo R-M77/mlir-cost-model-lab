@@ -12,6 +12,7 @@ from typing import Any, Sequence
 
 from .estimator import estimate_graph
 from .lowering import compare_matmul_lowering_graph
+from .mlir_emitter import emit_matmul_mlir_graph
 from .optimizer import optimize_graph
 from .parser import GraphValidationError, load_graph
 
@@ -407,6 +408,11 @@ def _build_parser() -> argparse.ArgumentParser:
         help="emit an opt-in before/after matmul lowering report",
     )
     parser.add_argument(
+        "--emit-mlir",
+        action="store_true",
+        help="emit textual MLIR for one standalone rank-2 f32 matmul graph",
+    )
+    parser.add_argument(
         "--lowering-mode",
         choices=("scalar", "tiled"),
         default="scalar",
@@ -430,6 +436,18 @@ def _build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
+    if args.emit_mlir:
+        if args.graph is None or args.benchmark is not None:
+            parser.error("--emit-mlir requires a single graph path")
+        for option, enabled in (
+            ("--compact", args.compact),
+            ("--omit-paths", args.omit_paths),
+            ("--budget", args.budget is not None),
+            ("--optimize", args.optimize),
+            ("--lower-matmul", args.lower_matmul),
+        ):
+            if enabled:
+                parser.error(f"--emit-mlir cannot be combined with {option}")
     if args.case_names and args.benchmark is None:
         parser.error("--case requires --benchmark JSON")
     if args.omit_paths and args.benchmark is None:
@@ -463,6 +481,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         else:
             assert args.graph is not None
             graph = load_graph(args.graph)
+            if args.emit_mlir:
+                sys.stdout.write(emit_matmul_mlir_graph(graph))
+                return 0
             if args.lower_matmul:
                 report = compare_matmul_lowering_graph(
                     graph,

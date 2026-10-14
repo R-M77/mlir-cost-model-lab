@@ -16,13 +16,14 @@ Compiler and kernel decisions often need a quick first-order answer to questions
 
 ## Architecture
 
-The package under `src/cost_model` is split into six small layers:
+The package under `src/cost_model` is split into seven small layers:
 
 - `models.py` — immutable tensor, operation, and graph data structures.
 - `parser.py` — JSON schema validation, value lookup, and static shape inference.
 - `estimator.py` — FLOP, byte-traffic, arithmetic-intensity, roofline, and baseline fusion calculations.
 - `optimizer.py` — opt-in liveness-aware elementwise fusion planning and before/after reporting.
 - `lowering.py` — opt-in, target-independent scalar or N-axis tiled/vector matmul lowering and cost comparison.
+- `mlir_emitter.py` — deterministic textual MLIR emission for one standalone rank-2 f32 matmul.
 - `cli.py` / `__main__.py` — stable `python -m cost_model` interface, batch benchmark mode, deterministic budget gate, and readable JSON output.
 
 The parser processes operations in source order, so an operation can only use an input or an earlier result. Elementwise `add` and `mul` use trailing-dimension broadcasting; `matmul` is rank-2 only. An optional validated target is carried with the graph. The estimator preserves operation order and emits JSON-friendly integer counts plus floating-point intensity and roofline values.
@@ -51,6 +52,12 @@ Run the opt-in matmul-lowering exercise:
 
 ```bash
 PYTHONPATH=src python -m cost_model --lower-matmul examples/matmul_lowering.json
+```
+
+Emit textual MLIR for the same standalone matmul:
+
+```bash
+PYTHONPATH=src python -m cost_model --emit-mlir examples/matmul_lowering.json
 ```
 
 Run several graph files as one deterministic batch. The `--benchmark` file is a non-empty JSON array. Each item can be a graph path string, or an object containing exactly the required `name` and `path` fields:
@@ -220,6 +227,18 @@ cache capacity, alignment, register pressure, instruction scheduling, and
 generated machine code are not modeled. The same `before`, `after`, and
 `cost_delta` contract is returned for both `scalar` (the default) and `tiled`
 modes.
+
+## Textual MLIR emission
+
+`emit_matmul_mlir(payload)`, `emit_matmul_mlir_graph(graph)`, and the opt-in
+`--emit-mlir` command emit deterministic textual MLIR for exactly one rank-2
+matmul whose result is the only graph output. All graph inputs and the output
+must be `f32`, and the only graph inputs must be the two matmul operands. The
+emitter uses stable function and SSA names and emits a
+`module`, `func.func`, `tensor.empty`, and `linalg.matmul`; it does not invoke
+an MLIR runtime or require MLIR tooling. The CLI prints raw MLIR and is
+single-graph only; it cannot be combined with `--benchmark`, `--optimize`,
+`--lower-matmul`, `--compact`, `--omit-paths`, or `--budget`.
 
 Install the project and test extras in a virtual environment when desired:
 
