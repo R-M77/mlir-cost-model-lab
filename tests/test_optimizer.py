@@ -173,6 +173,24 @@ def test_non_adjacent_elementwise_operations_are_not_fused() -> None:
     assert report["optimized"]["applied_fusions"] == []
 
 
+def test_layer_norm_is_not_an_elementwise_fusion_candidate() -> None:
+    payload = _graph(
+        [
+            {"name": "producer", "op": "add", "inputs": ["x", "y"], "outputs": ["before_norm"]},
+            {"name": "normalize", "op": "layer_norm", "inputs": ["before_norm"], "outputs": ["after_norm"]},
+            {"name": "consumer", "op": "relu", "inputs": ["after_norm"], "outputs": ["output"]},
+        ],
+        ["output"],
+    )
+
+    report = analyze_graph(payload)
+    optimized = optimize_graph(parse_graph(payload))["optimized"]
+
+    assert report["fusion"] == {"count": 0, "candidates": []}
+    assert optimized["applied_fusions"] == []
+    assert optimized["bytes_avoided"] == 0
+
+
 def test_matmul_is_a_fusion_boundary() -> None:
     payload = {
         "name": "matmul_boundary",

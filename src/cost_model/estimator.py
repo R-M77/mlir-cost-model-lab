@@ -59,6 +59,12 @@ def _op_flops(operation: Operation, graph: Graph) -> int:
         width = output.shape[-1]
         rows = output.elements // width
         return rows * (5 * width - 2)
+    if operation.kind == "layer_norm":
+        width = output.shape[-1]
+        rows = output.elements // width
+        # Per row, mean costs K, variance 3K, and normalization 2K + 2
+        # scalar-operation equivalents, for a total of 6K + 2.
+        return rows * (6 * width + 2)
     # The model counts one scalar arithmetic/comparison per element for these ops.
     return output.elements
 

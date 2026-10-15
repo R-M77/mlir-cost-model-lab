@@ -11,7 +11,9 @@ from typing import Any
 
 from .models import DTYPE_BYTES, Graph, Operation, Target, Tensor
 
-SUPPORTED_OPS = frozenset({"add", "matmul", "mul", "relu", "softmax"})
+SUPPORTED_OPS = frozenset(
+    {"add", "layer_norm", "matmul", "mul", "relu", "softmax"}
+)
 FLOAT_DTYPES = frozenset({"f16", "bf16", "f32", "f64"})
 
 
@@ -126,6 +128,19 @@ def _infer_output(kind: str, inputs: tuple[Tensor, ...], output_name: str) -> Te
             )
         return Tensor(output_name, source.shape, source.dtype)
 
+    if kind == "layer_norm":
+        (source,) = inputs
+        if not source.shape:
+            raise GraphValidationError(
+                "layer_norm requires an input tensor of rank at least 1"
+            )
+        if source.dtype not in FLOAT_DTYPES:
+            raise GraphValidationError(
+                "layer_norm requires a floating-point input dtype "
+                "(f16, bf16, f32, or f64)"
+            )
+        return Tensor(output_name, source.shape, source.dtype)
+
     if kind in {"add", "mul"}:
         lhs, rhs = inputs
         if lhs.dtype != rhs.dtype:
@@ -181,7 +196,7 @@ def parse_graph(payload: Mapping[str, Any]) -> Graph:
             raise GraphValidationError(
                 f"ops[{index}] unsupported operation {kind!r}; use one of {supported}"
             )
-        expected_inputs = 1 if kind in {"relu", "softmax"} else 2
+        expected_inputs = 1 if kind in {"layer_norm", "relu", "softmax"} else 2
         input_names = _parse_value_names(op.get("inputs"), f"ops[{index}].inputs", expected_inputs)
         output_names = _parse_value_names(op.get("outputs"), f"ops[{index}].outputs", 1)
         output_name = output_names[0]

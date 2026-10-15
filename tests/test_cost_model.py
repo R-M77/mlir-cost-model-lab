@@ -56,6 +56,20 @@ SOFTMAX_GRAPH = {
     "outputs": ["result"],
 }
 
+LAYER_NORM_GRAPH = {
+    "name": "last_axis_layer_norm",
+    "inputs": {"source": {"shape": [2, 3, 4], "dtype": "f32"}},
+    "ops": [
+        {
+            "name": "layer_norm",
+            "op": "layer_norm",
+            "inputs": ["source"],
+            "outputs": ["result"],
+        }
+    ],
+    "outputs": ["result"],
+}
+
 
 def test_estimates_per_op_totals_and_fusion_opportunity() -> None:
     report = analyze_graph(EXAMPLE_GRAPH)
@@ -213,6 +227,102 @@ def test_default_cli_accepts_softmax_deterministically(tmp_path: Path) -> None:
     assert report["ops"][0]["flops"] == 36
     assert report["ops"][0]["bytes_read"] == 32
     assert report["ops"][0]["bytes_written"] == 32
+    assert report["fusion"] == {"count": 0, "candidates": []}
+
+
+@pytest.mark.parametrize(
+    ("dtype", "dtype_bytes"),
+    [("f16", 2), ("bf16", 2), ("f32", 4), ("f64", 8)],
+)
+@pytest.mark.parametrize(
+    ("shape", "expected_flops"), [([4], 26), ([2, 3, 4], 156)]
+)
+def test_layer_norm_preserves_shape_dtype_and_reports_last_axis_cost(
+    dtype: str, dtype_bytes: int, shape: list[int], expected_flops: int
+) -> None:
+    payload = deepcopy(LAYER_NORM_GRAPH)
+    payload["inputs"]["source"]["dtype"] = dtype
+    payload["inputs"]["source"]["shape"] = shape
+
+    report = analyze_graph(payload)
+    operation = report["ops"][0]
+    expected_bytes = 1
+    for dimension in shape:
+        expected_bytes *= dimension
+    expected_bytes *= dtype_bytes
+
+    assert operation["shape"] == shape
+    assert operation["dtype"] == dtype
+    assert operation["flops"] == expected_flops
+    assert operation["bytes_read"] == expected_bytes
+    assert operation["bytes_written"] == expected_bytes
+    assert report["fusion"] == {"count": 0, "candidates": []}
+
+
+@pytest.mark.parametrize("dtype", ["bool", "i8", "u8", "i32", "i64"])
+def test_layer_norm_rejects_non_floating_input_dtypes(dtype: str) -> None:
+    payload = deepcopy(LAYER_NORM_GRAPH)
+    payload["inputs"]["source"]["dtype"] = dtype
+
+    with pytest.raises(
+        GraphValidationError,
+        match="layer_norm requires a floating-point input dtype",
+    ):
+        analyze_graph(payload)
+
+
+def test_layer_norm_rejects_rank_zero_input() -> None:
+    payload = deepcopy(LAYER_NORM_GRAPH)
+    payload["inputs"]["source"]["shape"] = []
+
+    with pytest.raises(
+        GraphValidationError,
+        match="layer_norm requires an input tensor of rank at least 1",
+    ):
+        analyze_graph(payload)
+
+
+@pytest.mark.parametrize("input_names", [[], ["source", "source"]])
+def test_layer_norm_requires_exactly_one_input(input_names: list[str]) -> None:
+    payload = deepcopy(LAYER_NORM_GRAPH)
+    payload["ops"][0]["inputs"] = input_names
+
+    with pytest.raises(
+        GraphValidationError,
+        match="must contain exactly 1 value names",
+    ):
+        analyze_graph(payload)
+
+
+def test_default_cli_accepts_layer_norm_deterministically(tmp_path: Path) -> None:
+    graph_path = tmp_path / "layer_norm.json"
+    graph_path.write_text(json.dumps(LAYER_NORM_GRAPH), encoding="utf-8")
+    env = {**os.environ, "PYTHONPATH": "src"}
+
+    first = subprocess.run(
+        [sys.executable, "-m", "cost_model", str(graph_path)],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+    )
+    second = subprocess.run(
+        [sys.executable, "-m", "cost_model", str(graph_path)],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+    )
+
+    assert first.returncode == second.returncode == 0
+    assert first.stderr == second.stderr == ""
+    assert first.stdout == second.stdout
+    report = json.loads(first.stdout)
+    assert report["ops"][0]["shape"] == [2, 3, 4]
+    assert report["ops"][0]["dtype"] == "f32"
+    assert report["ops"][0]["flops"] == 156
+    assert report["ops"][0]["bytes_read"] == 96
+    assert report["ops"][0]["bytes_written"] == 96
     assert report["fusion"] == {"count": 0, "candidates": []}
 
 
