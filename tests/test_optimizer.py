@@ -191,6 +191,24 @@ def test_layer_norm_is_not_an_elementwise_fusion_candidate() -> None:
     assert optimized["bytes_avoided"] == 0
 
 
+def test_reduce_sum_is_not_an_elementwise_fusion_candidate() -> None:
+    payload = _graph(
+        [
+            {"name": "producer", "op": "add", "inputs": ["x", "y"], "outputs": ["before_sum"]},
+            {"name": "sum", "op": "reduce_sum", "inputs": ["before_sum"], "outputs": ["after_sum"]},
+            {"name": "consumer", "op": "relu", "inputs": ["after_sum"], "outputs": ["output"]},
+        ],
+        ["output"],
+    )
+
+    report = analyze_graph(payload)
+    optimized = optimize_graph(parse_graph(payload))["optimized"]
+
+    assert report["fusion"] == {"count": 0, "candidates": []}
+    assert optimized["applied_fusions"] == []
+    assert optimized["bytes_avoided"] == 0
+
+
 def test_matmul_is_a_fusion_boundary() -> None:
     payload = {
         "name": "matmul_boundary",

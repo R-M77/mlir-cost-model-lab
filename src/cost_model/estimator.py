@@ -65,6 +65,11 @@ def _op_flops(operation: Operation, graph: Graph) -> int:
         # Per row, mean costs K, variance 3K, and normalization 2K + 2
         # scalar-operation equivalents, for a total of 6K + 2.
         return rows * (6 * width + 2)
+    if operation.kind == "reduce_sum":
+        source = graph.values[operation.inputs[0]]
+        width = source.shape[-1]
+        rows = source.elements // width
+        return rows * (width - 1)
     # The model counts one scalar arithmetic/comparison per element for these ops.
     return output.elements
 

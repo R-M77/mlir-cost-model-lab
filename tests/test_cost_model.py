@@ -71,6 +71,21 @@ LAYER_NORM_GRAPH = {
 }
 
 
+REDUCE_SUM_GRAPH = {
+    "name": "last_axis_reduce_sum",
+    "inputs": {"source": {"shape": [2, 3, 4], "dtype": "f32"}},
+    "ops": [
+        {
+            "name": "reduce_sum",
+            "op": "reduce_sum",
+            "inputs": ["source"],
+            "outputs": ["result"],
+        }
+    ],
+    "outputs": ["result"],
+}
+
+
 def test_estimates_per_op_totals_and_fusion_opportunity() -> None:
     report = analyze_graph(EXAMPLE_GRAPH)
 
@@ -323,6 +338,125 @@ def test_default_cli_accepts_layer_norm_deterministically(tmp_path: Path) -> Non
     assert report["ops"][0]["flops"] == 156
     assert report["ops"][0]["bytes_read"] == 96
     assert report["ops"][0]["bytes_written"] == 96
+    assert report["fusion"] == {"count": 0, "candidates": []}
+
+
+@pytest.mark.parametrize(
+    ("dtype", "dtype_bytes"),
+    [
+        ("f16", 2),
+        ("bf16", 2),
+        ("f32", 4),
+        ("f64", 8),
+        ("i8", 1),
+        ("u8", 1),
+        ("i32", 4),
+        ("i64", 8),
+    ],
+)
+def test_reduce_sum_preserves_numeric_dtype_and_reduces_final_axis(
+    dtype: str, dtype_bytes: int
+) -> None:
+    payload = deepcopy(REDUCE_SUM_GRAPH)
+    payload["inputs"]["source"]["dtype"] = dtype
+
+    report = analyze_graph(payload)
+    operation = report["ops"][0]
+
+    assert operation["shape"] == [2, 3]
+    assert operation["dtype"] == dtype
+    assert operation["flops"] == 18
+    assert operation["bytes_read"] == 24 * dtype_bytes
+    assert operation["bytes_written"] == 6 * dtype_bytes
+    assert report["fusion"] == {"count": 0, "candidates": []}
+
+
+def test_reduce_sum_rank_one_input_produces_scalar_shape() -> None:
+    payload = deepcopy(REDUCE_SUM_GRAPH)
+    payload["inputs"]["source"] = {"shape": [5], "dtype": "i32"}
+
+    operation = analyze_graph(payload)["ops"][0]
+
+    assert operation["shape"] == []
+    assert operation["dtype"] == "i32"
+    assert operation["flops"] == 4
+    assert operation["bytes_read"] == 20
+    assert operation["bytes_written"] == 4
+
+
+def test_reduce_sum_singleton_axis_counts_no_additions() -> None:
+    payload = deepcopy(REDUCE_SUM_GRAPH)
+    payload["inputs"]["source"] = {"shape": [2, 3, 1], "dtype": "f32"}
+
+    operation = analyze_graph(payload)["ops"][0]
+
+    assert operation["shape"] == [2, 3]
+    assert operation["flops"] == 0
+    assert operation["bytes_read"] == 24
+    assert operation["bytes_written"] == 24
+
+
+def test_reduce_sum_rejects_rank_zero_input() -> None:
+    payload = deepcopy(REDUCE_SUM_GRAPH)
+    payload["inputs"]["source"]["shape"] = []
+
+    with pytest.raises(
+        GraphValidationError,
+        match="reduce_sum requires an input tensor of rank at least 1",
+    ):
+        analyze_graph(payload)
+
+
+def test_reduce_sum_rejects_boolean_input_dtype() -> None:
+    payload = deepcopy(REDUCE_SUM_GRAPH)
+    payload["inputs"]["source"]["dtype"] = "bool"
+
+    with pytest.raises(
+        GraphValidationError,
+        match="reduce_sum requires a numeric input dtype",
+    ):
+        analyze_graph(payload)
+
+
+@pytest.mark.parametrize("input_names", [[], ["source", "source"]])
+def test_reduce_sum_requires_exactly_one_input(input_names: list[str]) -> None:
+    payload = deepcopy(REDUCE_SUM_GRAPH)
+    payload["ops"][0]["inputs"] = input_names
+
+    with pytest.raises(GraphValidationError, match="must contain exactly 1 value names"):
+        analyze_graph(payload)
+
+
+def test_default_cli_accepts_reduce_sum_deterministically(tmp_path: Path) -> None:
+    graph_path = tmp_path / "reduce_sum.json"
+    graph_path.write_text(json.dumps(REDUCE_SUM_GRAPH), encoding="utf-8")
+    env = {**os.environ, "PYTHONPATH": "src"}
+
+    first = subprocess.run(
+        [sys.executable, "-m", "cost_model", str(graph_path)],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+    )
+    second = subprocess.run(
+        [sys.executable, "-m", "cost_model", str(graph_path)],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+    )
+
+    assert first.returncode == second.returncode == 0
+    assert first.stderr == second.stderr == ""
+    assert first.stdout == second.stdout
+    report = json.loads(first.stdout)
+    operation = report["ops"][0]
+    assert operation["shape"] == [2, 3]
+    assert operation["dtype"] == "f32"
+    assert operation["flops"] == 18
+    assert operation["bytes_read"] == 96
+    assert operation["bytes_written"] == 24
     assert report["fusion"] == {"count": 0, "candidates": []}
 
 

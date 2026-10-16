@@ -12,7 +12,7 @@ from typing import Any
 from .models import DTYPE_BYTES, Graph, Operation, Target, Tensor
 
 SUPPORTED_OPS = frozenset(
-    {"add", "layer_norm", "matmul", "mul", "relu", "softmax"}
+    {"add", "layer_norm", "matmul", "mul", "reduce_sum", "relu", "softmax"}
 )
 FLOAT_DTYPES = frozenset({"f16", "bf16", "f32", "f64"})
 
@@ -128,6 +128,16 @@ def _infer_output(kind: str, inputs: tuple[Tensor, ...], output_name: str) -> Te
             )
         return Tensor(output_name, source.shape, source.dtype)
 
+    if kind == "reduce_sum":
+        (source,) = inputs
+        if not source.shape:
+            raise GraphValidationError(
+                "reduce_sum requires an input tensor of rank at least 1"
+            )
+        if source.dtype == "bool":
+            raise GraphValidationError("reduce_sum requires a numeric input dtype (not bool)")
+        return Tensor(output_name, source.shape[:-1], source.dtype)
+
     if kind == "layer_norm":
         (source,) = inputs
         if not source.shape:
@@ -196,7 +206,9 @@ def parse_graph(payload: Mapping[str, Any]) -> Graph:
             raise GraphValidationError(
                 f"ops[{index}] unsupported operation {kind!r}; use one of {supported}"
             )
-        expected_inputs = 1 if kind in {"layer_norm", "relu", "softmax"} else 2
+        expected_inputs = (
+            1 if kind in {"layer_norm", "reduce_sum", "relu", "softmax"} else 2
+        )
         input_names = _parse_value_names(op.get("inputs"), f"ops[{index}].inputs", expected_inputs)
         output_names = _parse_value_names(op.get("outputs"), f"ops[{index}].outputs", 1)
         output_name = output_names[0]
