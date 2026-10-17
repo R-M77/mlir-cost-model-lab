@@ -586,6 +586,58 @@ def test_roofline_reports_compute_and_memory_bounds(
     assert report["totals"]["roofline"] == expected
 
 
+def test_compact_cli_classifies_exact_roofline_ridge_tie_as_compute_bound(
+    tmp_path: Path,
+) -> None:
+    graph = {
+        "name": "relu_ridge_tie",
+        "inputs": {"source": {"shape": [1], "dtype": "f32"}},
+        "ops": [
+            {
+                "name": "relu",
+                "op": "relu",
+                "inputs": ["source"],
+                "outputs": ["result"],
+            }
+        ],
+        "outputs": ["result"],
+        "target": {
+            "peak_compute_gflops": 1,
+            "memory_bandwidth_gbps": 8,
+        },
+    }
+    graph_path = tmp_path / "relu_ridge_tie.json"
+    graph_path.write_text(json.dumps(graph), encoding="utf-8")
+    env = {**os.environ, "PYTHONPATH": "src"}
+
+    first = subprocess.run(
+        [sys.executable, "-m", "cost_model", "--compact", str(graph_path)],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+    )
+    second = subprocess.run(
+        [sys.executable, "-m", "cost_model", "--compact", str(graph_path)],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+    )
+
+    assert first.returncode == second.returncode == 0
+    assert first.stderr == second.stderr == ""
+    assert first.stdout == second.stdout
+    report = json.loads(first.stdout)
+    assert report["ops"][0]["arithmetic_intensity"] == 0.125
+    assert report["totals"]["arithmetic_intensity"] == 0.125
+    for roofline in (report["ops"][0]["roofline"], report["totals"]["roofline"]):
+        assert roofline["arithmetic_intensity"] == 0.125
+        assert roofline["ridge_point"] == 0.125
+        assert roofline["bound"] == "compute"
+        assert roofline["estimated_time_us"] == 0.001
+
+
 @pytest.mark.parametrize(
     "target",
     [
