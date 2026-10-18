@@ -274,6 +274,52 @@ def test_layer_norm_preserves_shape_dtype_and_reports_last_axis_cost(
     assert report["fusion"] == {"count": 0, "candidates": []}
 
 
+def test_broadcasted_mul_infers_shape_and_reports_exact_target_aware_cost() -> None:
+    target = {"peak_compute_gflops": 1, "memory_bandwidth_gbps": 1}
+    payload = {
+        "name": "broadcasted_mul",
+        "inputs": {
+            "lhs": {"shape": [2, 1, 3], "dtype": "f32"},
+            "rhs": {"shape": [1, 4, 1], "dtype": "f32"},
+        },
+        "ops": [
+            {
+                "name": "mul",
+                "op": "mul",
+                "inputs": ["lhs", "rhs"],
+                "outputs": ["result"],
+            }
+        ],
+        "outputs": ["result"],
+        "target": target,
+    }
+
+    report = analyze_graph(payload)
+    operation = report["ops"][0]
+    totals = report["totals"]
+    expected_roofline = {
+        "arithmetic_intensity": pytest.approx(24 / 136),
+        "ridge_point": 1.0,
+        "bound": "memory",
+        "estimated_time_us": pytest.approx(0.136),
+    }
+
+    assert operation["op"] == "mul"
+    assert operation["shape"] == [2, 4, 3]
+    assert operation["dtype"] == "f32"
+    assert operation["flops"] == 24
+    assert operation["bytes_read"] == 40
+    assert operation["bytes_written"] == 96
+    assert operation["arithmetic_intensity"] == pytest.approx(24 / 136)
+    assert totals["flops"] == operation["flops"]
+    assert totals["bytes_read"] == operation["bytes_read"]
+    assert totals["bytes_written"] == operation["bytes_written"]
+    assert totals["arithmetic_intensity"] == pytest.approx(24 / 136)
+    assert report["target"] == target
+    assert operation["roofline"] == expected_roofline
+    assert totals["roofline"] == expected_roofline
+
+
 @pytest.mark.parametrize("dtype", ["bool", "i8", "u8", "i32", "i64"])
 def test_layer_norm_rejects_non_floating_input_dtypes(dtype: str) -> None:
     payload = deepcopy(LAYER_NORM_GRAPH)
