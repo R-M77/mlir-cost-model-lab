@@ -73,6 +73,10 @@ def _validate_matmul_exercise(graph: Graph) -> tuple[Operation, Tensor, Tensor, 
     lhs = graph.values[operation.inputs[0]]
     rhs = graph.values[operation.inputs[1]]
     output = graph.values[operation.output]
+    if len(lhs.shape) != 2 or len(rhs.shape) != 2:
+        raise LoweringValidationError(
+            "matmul lowering exercise requires rank-2 input tensors"
+        )
     return operation, lhs, rhs, output
 
 

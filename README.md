@@ -26,7 +26,7 @@ The package under `src/cost_model` is split into seven small layers:
 - `mlir_emitter.py` — deterministic textual MLIR emission for one standalone rank-2 f32 matmul.
 - `cli.py` / `__main__.py` — stable `python -m cost_model` interface, batch benchmark mode, deterministic budget gate, and readable JSON output.
 
-The parser processes operations in source order, so an operation can only use an input or an earlier result. Elementwise `add` and `mul` use trailing-dimension broadcasting; `matmul` is rank-2 only. An optional validated target is carried with the graph. The estimator preserves operation order and emits JSON-friendly integer counts plus floating-point intensity and roofline values.
+The parser processes operations in source order, so an operation can only use an input or an earlier result. Elementwise `add` and `mul` use trailing-dimension broadcasting; `matmul` accepts rank-2-or-higher inputs and broadcasts only their leading batch dimensions. An optional validated target is carried with the graph. The estimator preserves operation order and emits JSON-friendly integer counts plus floating-point intensity and roofline values.
 
 ## Quickstart
 
@@ -41,6 +41,22 @@ Use compact output for scripts:
 ```bash
 PYTHONPATH=src python -m cost_model --compact examples/matmul_bias_relu.json
 ```
+
+Model a batched contraction with broadcasted batch axes:
+
+```bash
+PYTHONPATH=src python -m cost_model --compact examples/batched_matmul.json
+```
+
+The inputs `[2, 1, 3, 5]` and `[1, 4, 5, 7]` produce `[2, 4, 3, 7]`:
+eight `3 × 5 × 7` matrix products, totaling 1,680 FLOPs, 680 bytes read,
+and 672 bytes written. The logical read model counts each stored operand
+once, without materializing broadcast copies. At the example's target,
+the roofline lower bound is memory-bound at `1.352` microseconds—not a
+measured runtime. Rank-2 inputs may also broadcast across a batched operand;
+rank-0/rank-1 inputs, mismatched dtypes, unaligned contraction dimensions,
+and incompatible batch axes are rejected. Lowering and textual MLIR emission
+remain rank-2-only.
 
 Request the opt-in optimization report (the unfused baseline remains embedded for auditability):
 
@@ -280,12 +296,12 @@ The optional `target` values are decimal rates: `peak_compute_gflops` is peak co
 
 ## Cost definitions
 
-- **Matmul FLOPs:** `2 × M × K × N`, counting one multiply and one add per output reduction term.
+- **Matmul FLOPs:** `2 × B × M × K × N`, counting one multiply and one add per output reduction term. The final two input axes are `(M, K)` and `(K, N)`; leading axes broadcast using the trailing-dimension rule, producing `batch_shape + (M, N)`. `B` is the product of the broadcasted batch dimensions, or 1 for rank-2 matmul. Dtypes must match, and vector/scalar promotion is not supported.
 - **Elementwise FLOPs:** one scalar operation per output element. `relu` counts its scalar comparison as one operation so it remains visible in the report; this is a modeling convention, not a hardware claim.
 - **Softmax scalar operation equivalents:** for each row of last-axis width `K`, `(K - 1)` max comparisons, `K` subtractions, `K` exponentials, `(K - 1)` sum additions, and `K` divisions are counted, for `5 × K - 2` equivalents per row. The count is multiplied by the product of all leading dimensions.
 - **Layer-norm scalar operation equivalents:** normalization is over the final axis. For each row of width `K`, mean is `(K - 1)` adds plus `1` division; variance is `K` subtracts plus `K` multiplies plus `(K - 1)` adds plus `1` division; normalization is `K` subtracts plus `1` epsilon add plus `1` square root plus `K` divisions. Thus the total is exactly `6 × K + 2` equivalents per row, multiplied by the product of all leading dimensions. The operation preserves shape and dtype and models no affine scale or bias. In this model, each `exp` or `sqrt` special function contributes one scalar-operation equivalent; these are conventions, not literal hardware FLOP counts or runtime estimates.
 - **Reduce-sum scalar operation equivalents:** for each row of final-axis width `K`, `(K - 1)` additions are counted, multiplied by the product of all leading dimensions. The output shape drops the final axis and retains the input dtype; bytes read are the full input and bytes written are the reduced output.
-- **Bytes read:** the sum of the storage size of each input value referenced by the operation.
+- **Bytes read:** the sum of the storage size of each input value referenced by the operation. Broadcasted operands, including batched matmul inputs, contribute their original stored size rather than an expanded batch size; this is logical traffic, not a prediction of cache reuse or physical memory reads.
 - **Bytes written:** the storage size of the operation's output value.
 - **Arithmetic intensity:** `FLOPs / (bytes read + bytes written)`, in FLOPs/byte. Zero traffic would produce `0.0` rather than a division error.
 - **Roofline ridge point:** `peak_compute_gflops / memory_bandwidth_gbps`, in FLOPs/byte. A per-op or total analysis is `compute`-bound when its arithmetic intensity is at least the ridge point (including equality); otherwise it is `memory`-bound.
@@ -316,7 +332,7 @@ The legality scope is intentionally explicit: this IR has no side-effect, layout
 ## Limitations
 
 - Static, fully known positive dimensions only; no symbolic shapes or runtime shape guards.
-- `matmul` accepts rank-2 tensors and requires matching dtypes.
+- `matmul` requires each input to have rank at least 2, matching dtypes, aligned contraction dimensions, and broadcast-compatible batch axes. Rank-0/rank-1 promotion is not supported; lowering and textual MLIR emission remain restricted to rank-2 inputs.
 - `softmax` operates only on the final axis of rank-1-or-higher floating-point tensors; `layer_norm` has the same rank/dtype restrictions and normalizes over the final axis without affine scale/bias. `reduce_sum` reduces the final axis of rank-1-or-higher tensors with any supported numeric dtype except `bool`. Softmax and layer-norm operation-equivalent counts are explicit conventions: each exponential or square root is counted as one scalar equivalent, with no implementation-specific numerical or hardware cost model.
 - Elementwise broadcasting follows a small trailing-dimension rule; there is no layout or stride model.
 - Every operation has exactly one output, and operations are already topologically ordered.

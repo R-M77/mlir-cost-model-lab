@@ -53,8 +53,7 @@ def _op_flops(operation: Operation, graph: Graph) -> int:
     output = graph.values[operation.output]
     if operation.kind == "matmul":
         lhs = graph.values[operation.inputs[0]]
-        rhs = graph.values[operation.inputs[1]]
-        return 2 * lhs.shape[0] * lhs.shape[1] * rhs.shape[1]
+        return 2 * output.elements * lhs.shape[-1]
     if operation.kind == "softmax":
         width = output.shape[-1]
         rows = output.elements // width

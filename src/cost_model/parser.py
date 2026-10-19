@@ -107,13 +107,19 @@ def _broadcast_shape(lhs: tuple[int, ...], rhs: tuple[int, ...]) -> tuple[int, .
 def _infer_output(kind: str, inputs: tuple[Tensor, ...], output_name: str) -> Tensor:
     if kind == "matmul":
         lhs, rhs = inputs
-        if len(lhs.shape) != 2 or len(rhs.shape) != 2:
-            raise GraphValidationError("matmul requires two rank-2 tensors")
-        if lhs.shape[1] != rhs.shape[0]:
+        if len(lhs.shape) < 2 or len(rhs.shape) < 2:
+            raise GraphValidationError("matmul requires two tensors of rank at least 2")
+        if lhs.shape[-1] != rhs.shape[-2]:
             raise GraphValidationError("matmul dimensions do not align")
         if lhs.dtype != rhs.dtype:
             raise GraphValidationError("matmul inputs must have the same dtype")
-        return Tensor(output_name, (lhs.shape[0], rhs.shape[1]), lhs.dtype)
+        try:
+            batch_shape = _broadcast_shape(lhs.shape[:-2], rhs.shape[:-2])
+        except ValueError as exc:
+            raise GraphValidationError(
+                "matmul batch dimensions cannot be broadcast together"
+            ) from exc
+        return Tensor(output_name, (*batch_shape, lhs.shape[-2], rhs.shape[-1]), lhs.dtype)
 
     if kind == "softmax":
         (source,) = inputs
