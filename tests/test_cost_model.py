@@ -274,6 +274,41 @@ def test_layer_norm_preserves_shape_dtype_and_reports_last_axis_cost(
     assert report["fusion"] == {"count": 0, "candidates": []}
 
 
+def test_target_aware_relu_infers_shape_and_reports_exact_memory_bound_cost() -> None:
+    target = {"peak_compute_gflops": 2.0, "memory_bandwidth_gbps": 1.0}
+    payload = {
+        "name": "target_aware_relu",
+        "inputs": {"source": {"shape": [2, 3], "dtype": "f32"}},
+        "ops": [
+            {
+                "name": "relu",
+                "op": "relu",
+                "inputs": ["source"],
+                "outputs": ["result"],
+            }
+        ],
+        "outputs": ["result"],
+        "target": target,
+    }
+
+    report = analyze_graph(payload)
+    operation = report["ops"][0]
+
+    assert operation["shape"] == [2, 3]
+    assert operation["dtype"] == "f32"
+    assert operation["flops"] == 6
+    assert operation["bytes_read"] == 24
+    assert operation["bytes_written"] == 24
+    assert operation["arithmetic_intensity"] == pytest.approx(6 / 48)
+    assert report["target"] == target
+    assert operation["roofline"] == {
+        "arithmetic_intensity": pytest.approx(6 / 48),
+        "ridge_point": 2.0,
+        "bound": "memory",
+        "estimated_time_us": pytest.approx(0.048),
+    }
+
+
 def test_broadcasted_mul_infers_shape_and_reports_exact_target_aware_cost() -> None:
     target = {"peak_compute_gflops": 1, "memory_bandwidth_gbps": 1}
     payload = {
