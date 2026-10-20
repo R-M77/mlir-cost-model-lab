@@ -375,11 +375,6 @@ def _build_parser() -> argparse.ArgumentParser:
         help="run a batch from a JSON array of graph paths or named cases",
     )
     parser.add_argument(
-        "--omit-paths",
-        action="store_true",
-        help="omit case input paths from benchmark JSON output",
-    )
-    parser.add_argument(
         "--case",
         dest="case_names",
         action="append",
@@ -396,6 +391,14 @@ def _build_parser() -> argparse.ArgumentParser:
         "--compact",
         action="store_true",
         help="emit one-line JSON instead of the default readable form",
+    )
+    parser.add_argument(
+        "--omit-paths",
+        action="store_true",
+        help=(
+            "omit case path fields from benchmark JSON output; "
+            "names, shapes, and error diagnostics are not redacted"
+        ),
     )
     parser.add_argument(
         "--optimize",
@@ -497,6 +500,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
+    # Presentation-only: do not change case validation, selection, or budgets.
+    # This deliberately does not claim to anonymize graph contents or stderr.
     output_report = report
     if args.omit_paths:
         output_report = {
