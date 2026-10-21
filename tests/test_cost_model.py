@@ -739,6 +739,32 @@ def test_target_requires_positive_finite_compute_and_bandwidth(
         analyze_graph(_matmul_graph_with_target(target))
 
 
+@pytest.mark.parametrize("field", ["peak_compute_gflops", "memory_bandwidth_gbps"])
+def test_oversized_integer_target_returns_validation_and_cli_errors(
+    tmp_path: Path, field: str
+) -> None:
+    target: dict[str, object] = {"peak_compute_gflops": 100, "memory_bandwidth_gbps": 100}
+    target[field] = 10**1000
+    payload = _matmul_graph_with_target(target)
+    graph_path = tmp_path / "oversized_target.json"
+    graph_path.write_text(json.dumps(payload), encoding="utf-8")
+    message = f"target.{field} must be a positive finite number"
+    with pytest.raises(GraphValidationError) as error:
+        load_graph(graph_path)
+    assert str(error.value) == message
+
+    result = subprocess.run(
+        [sys.executable, "-m", "cost_model", str(graph_path)],
+        capture_output=True,
+        text=True,
+        check=False,
+        env={**os.environ, "PYTHONPATH": "src"},
+    )
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert result.stderr == f"error: {message}\n"
+
+
 def test_graph_without_target_has_explicit_null_roofline_analysis() -> None:
     report = analyze_graph(EXAMPLE_GRAPH)
 

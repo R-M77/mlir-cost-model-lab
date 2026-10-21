@@ -57,14 +57,17 @@ def _parse_tensor(name: str, value: object, label: str) -> Tensor:
 
 
 def _parse_target_number(value: object, label: str) -> float:
-    if (
-        isinstance(value, bool)
-        or not isinstance(value, (int, float))
-        or not isfinite(value)
-        or value <= 0
-    ):
-        raise GraphValidationError(f"{label} must be a positive finite number")
-    return float(value)
+    message = f"{label} must be a positive finite number"
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise GraphValidationError(message)
+    # Targets need floats for roofline arithmetic; JSON integers may not fit.
+    try:
+        number = float(value)
+    except OverflowError as exc:
+        raise GraphValidationError(message) from exc
+    if not isfinite(number) or number <= 0:
+        raise GraphValidationError(message)
+    return number
 
 
 def _parse_target(value: object) -> Target | None:

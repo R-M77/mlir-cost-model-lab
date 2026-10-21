@@ -8,7 +8,7 @@ import sys
 from collections.abc import Mapping
 from math import isfinite
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Sequence, TypeGuard
 
 from .estimator import estimate_graph
 from .lowering import compare_matmul_lowering_graph
@@ -167,6 +167,13 @@ def _benchmark_report(
 _BUDGET_METRICS = ("flops", "logical_bytes", "estimated_time_us")
 
 
+def _is_finite_number(value: object) -> TypeGuard[int | float]:
+    # Integers are always finite; avoid math.isfinite's implicit float conversion.
+    return not isinstance(value, bool) and (
+        isinstance(value, int) or (isinstance(value, float) and isfinite(value))
+    )
+
+
 def _parse_budget_metrics(value: object, label: str) -> dict[str, int | float]:
     if not isinstance(value, Mapping):
         raise GraphValidationError(f"invalid budget {label} must be an object")
@@ -182,12 +189,7 @@ def _parse_budget_metrics(value: object, label: str) -> dict[str, int | float]:
         if metric not in value:
             continue
         limit = value[metric]
-        if (
-            isinstance(limit, bool)
-            or not isinstance(limit, (int, float))
-            or not isfinite(limit)
-            or limit < 0
-        ):
+        if not _is_finite_number(limit) or limit < 0:
             raise GraphValidationError(
                 f"invalid budget {label}.{metric} must be a finite non-negative number"
             )
@@ -265,12 +267,7 @@ def _metric_value(totals: Mapping[str, Any], metric: str, label: str) -> int | f
     else:
         actual = totals.get(metric)
 
-    if (
-        actual is None
-        or isinstance(actual, bool)
-        or not isinstance(actual, (int, float))
-        or not isfinite(actual)
-    ):
+    if not _is_finite_number(actual):
         raise GraphValidationError(f"budget {label}.{metric} is unavailable in the benchmark report")
     return actual
 

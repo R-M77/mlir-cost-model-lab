@@ -8,6 +8,9 @@ from pathlib import Path
 
 import pytest
 
+from cost_model import GraphValidationError
+from cost_model.cli import _check_budget, _load_budget
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 TARGET_BOUNDS_BENCHMARK = REPO_ROOT / "benchmarks" / "target_bounds.json"
@@ -1609,6 +1612,64 @@ def test_invalid_benchmark_budget_schema_fails_closed(tmp_path: Path) -> None:
     assert result.returncode == 2
     assert result.stdout == ""
     assert "error: invalid budget aggregate.flops must be a finite non-negative number" in result.stderr
+
+
+@pytest.mark.parametrize("metric", ["flops", "logical_bytes", "estimated_time_us"])
+@pytest.mark.parametrize("scope", ["aggregate", "case"])
+def test_oversized_negative_integer_budget_returns_validation_and_cli_errors(
+    tmp_path: Path, metric: str, scope: str
+) -> None:
+    budget = {"aggregate": {metric: -(10**1000)}}
+    label = "aggregate"
+    if scope == "case":
+        budget = {
+            "aggregate": {"flops": 1_572_864},
+            "cases": {"memory_bound_relu": {metric: -(10**1000)}},
+        }
+        label = "cases['memory_bound_relu']"
+    budget_path = tmp_path / "budget.json"
+    budget_path.write_text(json.dumps(budget), encoding="utf-8")
+    message = f"invalid budget {label}.{metric} must be a finite non-negative number"
+
+    with pytest.raises(GraphValidationError) as error:
+        _load_budget(budget_path)
+    assert str(error.value) == message
+
+    result = _run_cli(
+        "--benchmark", str(TARGET_BOUNDS_BENCHMARK), "--budget", str(budget_path)
+    )
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert result.stderr == f"error: {message}\n"
+
+
+def test_oversized_positive_integer_budget_limits_remain_exact(tmp_path: Path) -> None:
+    limits = {metric: 10**1000 for metric in ("flops", "logical_bytes", "estimated_time_us")}
+    budget = {"aggregate": limits, "cases": {"memory_bound_relu": limits}}
+    budget_path = tmp_path / "budget.json"
+    budget_path.write_text(json.dumps(budget), encoding="utf-8")
+
+    assert _load_budget(budget_path) == budget
+    result = _run_cli(
+        "--benchmark", str(TARGET_BOUNDS_BENCHMARK),
+        "--budget", str(budget_path), "--compact",
+    )
+    assert result.returncode == 0
+    assert result.stderr == ""
+    assert result.stdout == TARGET_BOUNDS_EXPECTED.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("metric", ["flops", "logical_bytes", "estimated_time_us"])
+def test_budget_checks_oversized_integer_report_metrics_exactly(metric: str) -> None:
+    actual = 10**1000
+    report = {"summary": {"totals": {metric: actual}}}
+    budget = {"aggregate": {metric: actual - 1}, "cases": {}}
+
+    assert _check_budget(report, budget, optimize=False) == [
+        {"actual": actual, "limit": actual - 1, "metric": metric, "scope": "aggregate"}
+    ]
+    budget["aggregate"][metric] = actual
+    assert _check_budget(report, budget, optimize=False) == []
 
 
 def test_unreadable_budget_path_returns_cli_error(tmp_path: Path) -> None:
