@@ -244,9 +244,13 @@ def parse_graph(payload: Mapping[str, Any]) -> Graph:
         _require_nonempty_string(item, f"outputs[{index}]")
         for index, item in enumerate(raw_outputs)
     )
+    seen_outputs: set[str] = set()
     for output_name in outputs:
+        if output_name in seen_outputs:
+            raise GraphValidationError(f"duplicate graph output value {output_name!r}")
         if output_name not in values:
             raise GraphValidationError(f"unknown graph output value {output_name!r}")
+        seen_outputs.add(output_name)
 
     return Graph(name, inputs, tuple(operations), outputs, values, target)
 

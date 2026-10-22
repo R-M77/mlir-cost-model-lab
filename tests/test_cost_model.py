@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from cost_model import GraphValidationError, analyze_graph, load_graph
+from cost_model import GraphValidationError, analyze_graph, load_graph, parse_graph
 
 
 EXAMPLE_GRAPH = {
@@ -549,6 +549,85 @@ def test_graph_can_be_loaded_from_json_file(tmp_path: Path) -> None:
 
     assert graph.name == "matmul_bias_relu"
     assert len(graph.operations) == 3
+
+
+@pytest.mark.parametrize(
+    ("outputs", "duplicate"),
+    [
+        (["output", "output"], "output"),
+        (["output", "product", "output"], "output"),
+        (["biased", "product", "product", "biased"], "product"),
+        (["lhs", "output", "lhs"], "lhs"),
+    ],
+)
+def test_duplicate_graph_outputs_are_rejected_by_parser_and_api(
+    outputs: list[str], duplicate: str
+) -> None:
+    payload = deepcopy(EXAMPLE_GRAPH)
+    payload["outputs"] = outputs
+    message = f"duplicate graph output value {duplicate!r}"
+
+    with pytest.raises(GraphValidationError) as error:
+        parse_graph(payload)
+    assert str(error.value) == message
+    for optimize in (False, True):
+        with pytest.raises(GraphValidationError) as error:
+            analyze_graph(payload, optimize=optimize)
+        assert str(error.value) == message
+
+
+@pytest.mark.parametrize(
+    ("outputs", "duplicate"),
+    [
+        (["output", "output"], "output"),
+        (["output", "product", "output"], "output"),
+        (["biased", "product", "product", "biased"], "product"),
+        (["lhs", "output", "lhs"], "lhs"),
+    ],
+)
+@pytest.mark.parametrize("options", [[], ["--optimize"]])
+def test_cli_rejects_duplicate_graph_outputs_deterministically(
+    tmp_path: Path, outputs: list[str], duplicate: str, options: list[str]
+) -> None:
+    payload = deepcopy(EXAMPLE_GRAPH)
+    payload["outputs"] = outputs
+    graph_path = tmp_path / "duplicate_outputs.json"
+    graph_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    for _ in range(2):
+        result = subprocess.run(
+            [sys.executable, "-m", "cost_model", *options, str(graph_path)],
+            capture_output=True,
+            text=True,
+            check=False,
+            env={**os.environ, "PYTHONPATH": "src"},
+        )
+        assert result.returncode == 2
+        assert result.stdout == ""
+        assert result.stderr == f"error: duplicate graph output value {duplicate!r}\n"
+
+
+def test_unique_graph_outputs_preserve_declaration_order() -> None:
+    payload = deepcopy(EXAMPLE_GRAPH)
+    payload["outputs"] = ["output", "lhs", "biased", "product"]
+
+    graph = parse_graph(payload)
+    report = analyze_graph(payload, optimize=True)
+
+    assert graph.outputs == ("output", "lhs", "biased", "product")
+    assert report["optimized"]["graph_outputs"] == payload["outputs"]
+
+
+def test_repeated_operation_operands_remain_valid() -> None:
+    payload = deepcopy(SOFTMAX_GRAPH)
+    payload["ops"][0].update(op="mul", inputs=["source", "source"])
+
+    graph = parse_graph(payload)
+    report = analyze_graph(payload)
+
+    assert graph.operations[0].inputs == ("source", "source")
+    assert report["ops"][0]["inputs"] == ["source", "source"]
+    assert report["ops"][0]["bytes_read"] == 64
 
 
 @pytest.mark.parametrize(

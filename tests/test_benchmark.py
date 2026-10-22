@@ -634,6 +634,45 @@ def test_benchmark_case_selection_does_not_skip_duplicate_validation(
     )
 
 
+@pytest.mark.parametrize("options", [[], ["--optimize"]])
+def test_benchmark_case_selection_does_not_skip_duplicate_graph_output_validation(
+    tmp_path: Path, options: list[str]
+) -> None:
+    selected_graph = tmp_path / "selected.json"
+    selected_graph.write_text(json.dumps(_relu_graph("selected_graph")), encoding="utf-8")
+
+    invalid_payload = _relu_graph("invalid_graph")
+    invalid_payload["outputs"] = ["output", "output"]
+    invalid_graph = tmp_path / "invalid.json"
+    invalid_graph.write_text(json.dumps(invalid_payload), encoding="utf-8")
+
+    benchmark_path = tmp_path / "benchmark.json"
+    benchmark_path.write_text(
+        json.dumps(
+            [
+                {"name": "selected_case", "path": selected_graph.name},
+                {"name": "invalid_case", "path": invalid_graph.name},
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    result = _run_cli(
+        "--benchmark",
+        str(benchmark_path),
+        "--case",
+        "selected_case",
+        *options,
+        "--compact",
+    )
+
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert result.stderr == (
+        "error: benchmark case 'invalid_case': duplicate graph output value 'output'\n"
+    )
+
+
 def _target_bounds_budget() -> dict[str, object]:
     return {
         "aggregate": {

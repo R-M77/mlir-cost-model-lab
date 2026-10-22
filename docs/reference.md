@@ -254,6 +254,8 @@ unavailable because it requires benchmark mode.
 
 A graph has a name, named tensor inputs, a source-ordered list of single-output operations, graph outputs, and an optional target for roofline analysis:
 
+Top-level `outputs` must contain unique value names; declaration order is preserved. Repeated operation operands, such as `mul(x, x)`, remain valid.
+
 ```json
 {
   "name": "matmul_bias_relu",
