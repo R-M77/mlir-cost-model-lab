@@ -17,12 +17,28 @@ from .optimizer import optimize_graph
 from .parser import GraphValidationError, load_graph
 
 
+def _unique_json_object(
+    pairs: list[tuple[str, Any]], *, label: str
+) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise GraphValidationError(
+                f"invalid {label} JSON: duplicate object key {key!r}"
+            )
+        result[key] = value
+    return result
+
+
 def _load_benchmark_cases(
     benchmark_path: Path,
 ) -> list[tuple[str | None, str, Path]]:
     """Load benchmark case names and graph paths from a JSON array."""
     try:
-        payload = json.loads(benchmark_path.read_text(encoding="utf-8"))
+        payload = json.loads(
+            benchmark_path.read_text(encoding="utf-8"),
+            object_pairs_hook=lambda pairs: _unique_json_object(pairs, label="benchmark"),
+        )
     except OSError as exc:
         raise GraphValidationError(
             f"could not read benchmark {benchmark_path}: {exc}"
@@ -199,7 +215,10 @@ def _parse_budget_metrics(value: object, label: str) -> dict[str, int | float]:
 
 def _load_budget(budget_path: Path) -> dict[str, Any]:
     try:
-        payload = json.loads(budget_path.read_text(encoding="utf-8"))
+        payload = json.loads(
+            budget_path.read_text(encoding="utf-8"),
+            object_pairs_hook=lambda pairs: _unique_json_object(pairs, label="budget"),
+        )
     except OSError as exc:
         raise GraphValidationError(
             f"invalid budget {budget_path}: could not read file: {exc}"

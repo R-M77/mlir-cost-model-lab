@@ -451,6 +451,41 @@ def test_malformed_benchmark_object_case_returns_cli_error(
     assert result.stderr.strip() == f"error: {message}"
 
 
+@pytest.mark.parametrize(
+    ("entry", "key"),
+    [
+        pytest.param(
+            '{"name": "first", "name": "second", "path": "graph.json"}',
+            "name",
+            id="duplicate-name",
+        ),
+        pytest.param(
+            '{"name": "second", "path": "missing.json", "path": "graph.json"}',
+            "path",
+            id="duplicate-path",
+        ),
+    ],
+)
+@pytest.mark.parametrize("select_case", [False, True], ids=["all", "unselected"])
+def test_benchmark_rejects_duplicate_json_object_keys(
+    tmp_path: Path, entry: str, key: str, select_case: bool
+) -> None:
+    graph_path = tmp_path / "graph.json"
+    graph_path.write_text(json.dumps(_relu_graph("graph")), encoding="utf-8")
+    benchmark_path = tmp_path / "benchmark.json"
+    benchmark_path.write_text(
+        '[{"name": "selected", "path": "graph.json"},' + entry + ']',
+        encoding="utf-8",
+    )
+    selection = ("--case", "selected") if select_case else ()
+
+    result = _run_cli("--benchmark", str(benchmark_path), *selection, "--compact")
+
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert result.stderr == f"error: invalid benchmark JSON: duplicate object key {key!r}\n"
+
+
 def test_malformed_benchmark_json_returns_cli_error(tmp_path: Path) -> None:
     benchmark_path = tmp_path / "benchmark.json"
     benchmark_path.write_text("{", encoding="utf-8")
@@ -1632,6 +1667,139 @@ def test_invalid_budget_structure_schema_fails_closed(
     assert result.returncode == 2
     assert result.stdout == ""
     assert result.stderr == f"error: {message}\n"
+
+
+@pytest.mark.parametrize(
+    ("payload", "key"),
+    [
+        pytest.param(
+            '{"aggregate": {"flops": 4}, "cases": '
+            '{"first": {"flops": 1}, "first": {"flops": 2}}}',
+            "first",
+            id="duplicate-case-name",
+        ),
+        pytest.param(
+            '{"aggregate": {"flops": 4}, "cases": '
+            '{"first": {"flops": 2}, "first": {"flops": 2}}}',
+            "first",
+            id="duplicate-case-name-identical-values",
+        ),
+        pytest.param(
+            '{"aggregate": {"flops": 0, "flops": 4}}',
+            "flops",
+            id="duplicate-aggregate-flops",
+        ),
+        pytest.param(
+            '{"aggregate": {"logical_bytes": 0, "logical_bytes": 32}}',
+            "logical_bytes",
+            id="duplicate-aggregate-bytes",
+        ),
+        pytest.param(
+            '{"aggregate": {"estimated_time_us": 1, "estimated_time_us": 1}}',
+            "estimated_time_us",
+            id="duplicate-aggregate-time",
+        ),
+        pytest.param(
+            '{"aggregate": {"flops": 4}, "cases": '
+            '{"first": {"flops": 0, "flops": 2}}}',
+            "flops",
+            id="duplicate-per-case-flops",
+        ),
+        pytest.param(
+            '{"aggregate": {"flops": 4}, "cases": '
+            '{"first": {"logical_bytes": 0, "logical_bytes": 16}}}',
+            "logical_bytes",
+            id="duplicate-per-case-bytes",
+        ),
+        pytest.param(
+            '{"aggregate": {"flops": 4}, "cases": '
+            '{"first": {"estimated_time_us": 1, "estimated_time_us": 1}}}',
+            "estimated_time_us",
+            id="duplicate-per-case-time",
+        ),
+        pytest.param(
+            '{"aggregate": {"flops": 4}, "aggregate": {"flops": 4}}',
+            "aggregate",
+            id="duplicate-top-level-field",
+        ),
+    ],
+)
+def test_budget_rejects_duplicate_json_object_keys(
+    tmp_path: Path, payload: str, key: str
+) -> None:
+    graph_path = tmp_path / "graph.json"
+    graph_path.write_text(json.dumps(_relu_graph("graph")), encoding="utf-8")
+    benchmark_path = tmp_path / "benchmark.json"
+    benchmark_path.write_text(
+        '[{"name": "first", "path": "graph.json"},'
+        '{"name": "second", "path": "graph.json"}]',
+        encoding="utf-8",
+    )
+    budget_path = tmp_path / "budget.json"
+    budget_path.write_text(payload, encoding="utf-8")
+
+    result = _run_cli(
+        "--benchmark", str(benchmark_path), "--case", "second",
+        "--budget", str(budget_path), "--compact",
+    )
+
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert result.stderr == f"error: invalid budget JSON: duplicate object key {key!r}\n"
+
+
+@pytest.mark.parametrize(
+    ("selection", "budget", "names"),
+    [
+        pytest.param(
+            (),
+            '{"aggregate": {"flops": 4}, "cases": '
+            '{"first": {"flops": 2}, "second": {"flops": 2}}}',
+            ["first", "second"],
+            id="separate-case-entries",
+        ),
+        pytest.param(
+            ("--case", "second", "--case", "first", "--case", "second"),
+            '{"aggregate": {"flops": 4}, "cases": '
+            '{"first": {"flops": 2}, "second": {"flops": 2}}}',
+            ["first", "second"],
+            id="repeated-selection-in-manifest-order",
+        ),
+        pytest.param(
+            ("--case", "second"),
+            '{"aggregate": {"flops": 2}, "cases": {"second": {"flops": 2}}}',
+            ["second"],
+            id="single-selected-case",
+        ),
+    ],
+)
+def test_unique_json_keys_preserve_separate_cases_and_selection(
+    tmp_path: Path, selection: tuple[str, ...], budget: str, names: list[str]
+) -> None:
+    graph_path = tmp_path / "graph.json"
+    graph_path.write_text(json.dumps(_relu_graph("graph")), encoding="utf-8")
+    benchmark_path = tmp_path / "benchmark.json"
+    benchmark_path.write_text(
+        '[{"name": "first", "path": "graph.json"},'
+        '{"name": "second", "path": "graph.json"}]',
+        encoding="utf-8",
+    )
+    budget_path = tmp_path / "budget.json"
+    budget_path.write_text(budget, encoding="utf-8")
+
+    baseline = _run_cli("--benchmark", str(benchmark_path), *selection, "--compact")
+    result = _run_cli(
+        "--benchmark", str(benchmark_path), *selection,
+        "--budget", str(budget_path), "--compact",
+    )
+
+    assert baseline.returncode == result.returncode == 0
+    assert baseline.stderr == result.stderr == ""
+    assert baseline.stdout == result.stdout
+    report = json.loads(result.stdout)
+    assert [case["name"] for case in report["cases"]] == names
+    assert report["summary"]["case_count"] == len(names)
+    assert report["summary"]["totals"]["flops"] == 2 * len(names)
 
 
 def test_invalid_benchmark_budget_schema_fails_closed(tmp_path: Path) -> None:

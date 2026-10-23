@@ -81,6 +81,9 @@ PYTHONPATH=src python -m cost_model \
 
 `--case` is valid only with `--benchmark`; names must match exactly, and an unknown name is an error. When `--budget` is also supplied, aggregate and per-case limits are checked against the selected report, so budget case entries must name selected cases.
 
+Duplicate JSON object keys are rejected in benchmark manifests and budgets,
+including unselected entries, even when the repeated values are identical.
+
 Batch output keeps each report under `cases[*].report` and adds an aggregate `summary`:
 
 ```json
