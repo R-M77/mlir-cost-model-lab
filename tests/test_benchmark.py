@@ -539,6 +539,44 @@ def test_missing_graph_path_in_benchmark_returns_cli_error(tmp_path: Path) -> No
     )
 
 
+@pytest.mark.parametrize("options", [[], ["--optimize"]])
+@pytest.mark.parametrize("select_case", [False, True], ids=["all", "unselected"])
+def test_benchmark_rejects_nested_duplicate_graph_json_keys(
+    tmp_path: Path, options: list[str], select_case: bool
+) -> None:
+    selected_graph = tmp_path / "selected.json"
+    selected_graph.write_text(json.dumps(_relu_graph("selected")), encoding="utf-8")
+    invalid_graph = tmp_path / "invalid.json"
+    invalid_graph.write_text(
+        json.dumps(_relu_graph("invalid")).replace(
+            '"dtype": "f32"', '"dtype": "f32", "dtype": "f32"'
+        ),
+        encoding="utf-8",
+    )
+    benchmark_path = tmp_path / "benchmark.json"
+    benchmark_path.write_text(
+        json.dumps(
+            [
+                {"name": "selected_case", "path": selected_graph.name},
+                {"name": "invalid_case", "path": invalid_graph.name},
+            ]
+        ),
+        encoding="utf-8",
+    )
+    selection = ("--case", "selected_case") if select_case else ()
+
+    for _ in range(2):
+        result = _run_cli(
+            "--benchmark", str(benchmark_path), *selection, *options, "--compact"
+        )
+        assert result.returncode == 2
+        assert result.stdout == ""
+        assert result.stderr == (
+            "error: benchmark case 'invalid_case': "
+            "invalid graph JSON: duplicate object key 'dtype'\n"
+        )
+
+
 def test_malformed_graph_json_in_benchmark_returns_cli_error(tmp_path: Path) -> None:
     benchmark_path = tmp_path / "benchmark.json"
     graph_path = tmp_path / "malformed.json"

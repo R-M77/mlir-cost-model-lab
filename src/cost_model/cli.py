@@ -14,20 +14,7 @@ from .estimator import estimate_graph
 from .lowering import compare_matmul_lowering_graph
 from .mlir_emitter import emit_matmul_mlir_graph
 from .optimizer import optimize_graph
-from .parser import GraphValidationError, load_graph
-
-
-def _unique_json_object(
-    pairs: list[tuple[str, Any]], *, label: str
-) -> dict[str, Any]:
-    result: dict[str, Any] = {}
-    for key, value in pairs:
-        if key in result:
-            raise GraphValidationError(
-                f"invalid {label} JSON: duplicate object key {key!r}"
-            )
-        result[key] = value
-    return result
+from .parser import GraphValidationError, _unique_json_object, load_graph
 
 
 def _load_benchmark_cases(

@@ -21,6 +21,20 @@ class GraphValidationError(ValueError):
     """Raised when a graph violates the input schema or inference rules."""
 
 
+def _unique_json_object(
+    pairs: list[tuple[str, Any]], *, label: str
+) -> dict[str, Any]:
+    """Reject duplicate keys before JSON decoding can silently overwrite them."""
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise GraphValidationError(
+                f"invalid {label} JSON: duplicate object key {key!r}"
+            )
+        result[key] = value
+    return result
+
+
 def _require_mapping(value: object, label: str) -> Mapping[str, Any]:
     if not isinstance(value, Mapping):
         raise GraphValidationError(f"{label} must be an object")
@@ -256,11 +270,14 @@ def parse_graph(payload: Mapping[str, Any]) -> Graph:
 
 
 def load_graph(path: str | Path) -> Graph:
-    """Read and validate one graph JSON file."""
+    """Read and validate one graph JSON file, rejecting duplicate object keys."""
     graph_path = Path(path)
     try:
         text = graph_path.read_text(encoding="utf-8")
-        payload = json.loads(text)
+        payload = json.loads(
+            text,
+            object_pairs_hook=lambda pairs: _unique_json_object(pairs, label="graph"),
+        )
     except OSError as exc:
         raise GraphValidationError(f"could not read graph {graph_path}: {exc}") from exc
     except UnicodeDecodeError as exc:

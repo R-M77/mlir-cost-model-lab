@@ -551,6 +551,144 @@ def test_graph_can_be_loaded_from_json_file(tmp_path: Path) -> None:
     assert len(graph.operations) == 3
 
 
+DUPLICATE_GRAPH_KEY_CASES = [
+    pytest.param(
+        '"name": "last_axis_softmax"',
+        '"name": "ignored", "name": "last_axis_softmax"',
+        "name",
+        id="top-level-name",
+    ),
+    pytest.param(
+        '}], "outputs": ["result"]}',
+        '}], "outputs": ["result"], "outputs": ["result"]}',
+        "outputs",
+        id="top-level-identical-outputs",
+    ),
+    pytest.param(
+        '"source": {"shape": [2, 4], "dtype": "f32"}',
+        '"source": {"shape": [2, 4], "dtype": "f32"}, '
+        '"source": {"shape": [2, 4], "dtype": "f32"}',
+        "source",
+        id="input-name-identical-specs",
+    ),
+    pytest.param(
+        '"shape": [2, 4]',
+        '"shape": [1, 4], "shape": [2, 4]',
+        "shape",
+        id="tensor-shape",
+    ),
+    pytest.param(
+        '"dtype": "f32"',
+        '"dtype": "f32", "dtype": "f32"',
+        "dtype",
+        id="tensor-identical-dtype",
+    ),
+    pytest.param(
+        '"op": "softmax"',
+        '"op": "relu", "op": "softmax"',
+        "op",
+        id="operation-kind",
+    ),
+    pytest.param(
+        '"inputs": ["source"]',
+        '"inputs": ["source"], "inputs": ["source"]',
+        "inputs",
+        id="operation-identical-inputs",
+    ),
+    pytest.param(
+        '"name": "last_axis_softmax"',
+        r'"name": "ignored", "na\u006de": "last_axis_softmax"',
+        "name",
+        id="escaped-equivalent-key",
+    ),
+    pytest.param(
+        '"name": "last_axis_softmax"',
+        '"target": {"peak_compute_gflops": 1, "peak_compute_gflops": 1, '
+        '"memory_bandwidth_gbps": 1}, "name": "last_axis_softmax"',
+        "peak_compute_gflops",
+        id="target-identical-rate",
+    ),
+    pytest.param(
+        '"name": "last_axis_softmax"',
+        '"metadata": [{"nested": {"tag": null, "tag": null}}], '
+        '"name": "last_axis_softmax"',
+        "tag",
+        id="deeply-nested-unused-field",
+    ),
+]
+
+
+@pytest.mark.parametrize(("original", "replacement", "key"), DUPLICATE_GRAPH_KEY_CASES)
+def test_load_graph_rejects_duplicate_json_object_keys(
+    tmp_path: Path, original: str, replacement: str, key: str
+) -> None:
+    text = json.dumps(SOFTMAX_GRAPH)
+    assert text.count(original) == 1
+    graph_path = tmp_path / "duplicate_keys.json"
+    graph_path.write_text(text.replace(original, replacement), encoding="utf-8")
+
+    with pytest.raises(GraphValidationError) as error:
+        load_graph(graph_path)
+    assert str(error.value) == f"invalid graph JSON: duplicate object key {key!r}"
+
+
+@pytest.mark.parametrize(("original", "replacement", "key"), DUPLICATE_GRAPH_KEY_CASES)
+@pytest.mark.parametrize(
+    "options", [[], ["--optimize"], ["--lower-matmul"], ["--emit-mlir"]]
+)
+def test_cli_rejects_duplicate_graph_json_object_keys_deterministically(
+    tmp_path: Path, original: str, replacement: str, key: str, options: list[str]
+) -> None:
+    text = json.dumps(SOFTMAX_GRAPH)
+    assert text.count(original) == 1
+    graph_path = tmp_path / "duplicate_keys.json"
+    graph_path.write_text(text.replace(original, replacement), encoding="utf-8")
+
+    for _ in range(2):
+        result = subprocess.run(
+            [sys.executable, "-m", "cost_model", *options, str(graph_path)],
+            capture_output=True,
+            text=True,
+            check=False,
+            env={**os.environ, "PYTHONPATH": "src"},
+        )
+        assert result.returncode == 2
+        assert result.stdout == ""
+        assert result.stderr == f"error: invalid graph JSON: duplicate object key {key!r}\n"
+
+
+@pytest.mark.parametrize("optimize", [False, True], ids=["baseline", "optimized"])
+def test_graph_json_preserves_repeated_list_values_and_unique_outputs(
+    tmp_path: Path, optimize: bool
+) -> None:
+    payload = deepcopy(SOFTMAX_GRAPH)
+    payload["inputs"]["source"]["shape"] = [2, 2]
+    payload["ops"][0].update(op="mul", inputs=["source", "source"])
+    payload["outputs"] = ["result", "source"]
+    graph_path = tmp_path / "repeated_values.json"
+    graph_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    graph = load_graph(graph_path)
+    assert graph == parse_graph(payload)
+    assert graph.operations[0].inputs == ("source", "source")
+    assert graph.inputs["source"].shape == (2, 2)
+    assert graph.outputs == ("result", "source")
+
+    result = subprocess.run(
+        [
+            sys.executable, "-m", "cost_model",
+            *(["--optimize"] if optimize else []), str(graph_path),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        env={**os.environ, "PYTHONPATH": "src"},
+    )
+    assert result.returncode == 0
+    assert result.stderr == ""
+    assert json.loads(result.stdout) == analyze_graph(payload, optimize=optimize)
+
+
 @pytest.mark.parametrize(
     ("outputs", "duplicate"),
     [

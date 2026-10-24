@@ -81,8 +81,9 @@ PYTHONPATH=src python -m cost_model \
 
 `--case` is valid only with `--benchmark`; names must match exactly, and an unknown name is an error. When `--budget` is also supplied, aggregate and per-case limits are checked against the selected report, so budget case entries must name selected cases.
 
-Duplicate JSON object keys are rejected in benchmark manifests and budgets,
-including unselected entries, even when the repeated values are identical.
+Duplicate JSON object keys are rejected at every nesting level in graph files,
+benchmark manifests, and budgets, including unselected cases, even when the
+repeated values are identical.
 
 Batch output keeps each report under `cases[*].report` and adds an aggregate `summary`:
 
@@ -258,6 +259,20 @@ unavailable because it requires benchmark mode.
 A graph has a name, named tensor inputs, a source-ordered list of single-output operations, graph outputs, and an optional target for roofline analysis:
 
 Top-level `outputs` must contain unique value names; declaration order is preserved. Repeated operation operands, such as `mul(x, x)`, remain valid.
+
+Graph JSON object keys must be unique within each object, including input names,
+tensor specifications, operations, targets, and any nested extra fields.
+`load_graph(path)` rejects duplicate keys before schema validation with
+`GraphValidationError("invalid graph JSON: duplicate object key 'KEY'")`, even
+when their values are identical. Keys are compared after JSON escape decoding.
+Single-graph CLI modes exit with status `2`, empty stdout, and
+`error: invalid graph JSON: duplicate object key 'KEY'` on stderr. Benchmark mode
+prefixes that diagnostic with `benchmark case 'NAME':` and validates graph files
+even for unselected cases. This object-key policy does not deduplicate lists:
+repeated shape dimensions and operation operands remain valid, while top-level
+output names must still be unique and retain declaration order. Mapping-based
+APIs such as `parse_graph(payload)` cannot detect keys already overwritten by
+an external JSON decoder; use `load_graph(path)` to enforce this policy on files.
 
 ```json
 {
