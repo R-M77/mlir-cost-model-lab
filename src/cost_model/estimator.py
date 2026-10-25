@@ -4,17 +4,25 @@ from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Mapping
+from math import isfinite
 from typing import Any
 
 from .models import Graph, Operation, Target
-from .parser import parse_graph
+from .parser import GraphValidationError, parse_graph
 
 ELEMENTWISE_OPS = frozenset({"add", "mul", "relu"})
 
 
 def _intensity(flops: int, bytes_read: int, bytes_written: int) -> float:
     traffic = bytes_read + bytes_written
-    return flops / traffic if traffic else 0.0
+    message = "arithmetic intensity exceeds finite floating-point range"
+    try:
+        intensity = flops / traffic if traffic else 0.0
+    except OverflowError as exc:
+        raise GraphValidationError(message) from exc
+    if not isfinite(intensity):
+        raise GraphValidationError(message)
+    return intensity
 
 
 def _roofline_metrics(
@@ -29,9 +37,21 @@ def _roofline_metrics(
 
     logical_bytes = bytes_read + bytes_written
     arithmetic_intensity = _intensity(flops, bytes_read, bytes_written)
-    ridge_point = target.peak_compute_gflops / target.memory_bandwidth_gbps
-    compute_time_us = flops / (target.peak_compute_gflops * 1_000)
-    memory_time_us = logical_bytes / (target.memory_bandwidth_gbps * 1_000)
+    message = "roofline arithmetic exceeds finite floating-point range"
+    try:
+        ridge_point = target.peak_compute_gflops / target.memory_bandwidth_gbps
+        compute_rate = target.peak_compute_gflops * 1_000
+        memory_rate = target.memory_bandwidth_gbps * 1_000
+        compute_time_us = flops / compute_rate
+        memory_time_us = logical_bytes / memory_rate
+    except OverflowError as exc:
+        raise GraphValidationError(message) from exc
+    # Check both times before max(), and rates before overflow can hide as zero time.
+    if not all(
+        isfinite(value)
+        for value in (ridge_point, compute_rate, memory_rate, compute_time_us, memory_time_us)
+    ):
+        raise GraphValidationError(message)
     return {
         "arithmetic_intensity": arithmetic_intensity,
         "ridge_point": ridge_point,

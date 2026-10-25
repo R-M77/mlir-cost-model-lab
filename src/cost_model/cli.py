@@ -10,7 +10,7 @@ from math import isfinite
 from pathlib import Path
 from typing import Any, Sequence, TypeGuard
 
-from .estimator import estimate_graph
+from .estimator import _intensity, estimate_graph
 from .lowering import compare_matmul_lowering_graph
 from .mlir_emitter import emit_matmul_mlir_graph
 from .optimizer import optimize_graph
@@ -144,19 +144,24 @@ def _benchmark_report(
         )
 
     logical_bytes = total_bytes_read + total_bytes_written
+    estimated_time_us = (
+        sum(time for time in estimated_times if time is not None)
+        if all(time is not None for time in estimated_times)
+        else None
+    )
+    if estimated_time_us is not None and not isfinite(estimated_time_us):
+        raise GraphValidationError(
+            "benchmark estimated_time_us exceeds finite floating-point range"
+        )
     summary_totals: dict[str, Any] = {
         "flops": total_flops,
         "bytes_read": total_bytes_read,
         "bytes_written": total_bytes_written,
         "logical_bytes": logical_bytes,
-        "arithmetic_intensity": (
-            total_flops / logical_bytes if logical_bytes else 0.0
+        "arithmetic_intensity": _intensity(
+            total_flops, total_bytes_read, total_bytes_written
         ),
-        "estimated_time_us": (
-            sum(time for time in estimated_times if time is not None)
-            if all(time is not None for time in estimated_times)
-            else None
-        ),
+        "estimated_time_us": estimated_time_us,
     }
     return {
         "cases": cases,

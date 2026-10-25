@@ -108,6 +108,14 @@ Batch output keeps each report under `cases[*].report` and adds an aggregate `su
 
 The summary totals use each case's normal report, or its `optimized.totals` when `--optimize` is also supplied. `estimated_time_us` is the sum of per-case roofline times when every case has a target; it is `null` for a batch with any target-less case. A positional graph path and `--benchmark` are mutually exclusive; omitting both is an error. Existing single-graph commands and their JSON shape are unchanged.
 
+Schema-valid shapes and targets can still exceed the floating-point range used
+for derived costs. Unrepresentable arithmetic intensity, roofline arithmetic
+(including scaled target rates), or aggregate estimated time fails closed with
+`GraphValidationError`; the CLI emits a concise `error: ... exceeds finite
+floating-point range` diagnostic on stderr, no report on stdout, and status `2`.
+Integer counts have no added dimension limit, and target-less reports with finite
+derived costs remain supported even when their integer counts exceed float range.
+
 The target-bound regression fixture runs a compute-heavy matmul and a
 memory-heavy ReLU against the same idealized target:
 
