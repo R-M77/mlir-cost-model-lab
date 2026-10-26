@@ -268,6 +268,31 @@ A graph has a name, named tensor inputs, a source-ordered list of single-output 
 
 Top-level `outputs` must contain unique value names; declaration order is preserved. Repeated operation operands, such as `mul(x, x)`, remain valid.
 
+Graph schema objects are strict: unknown fields are errors, not ignored metadata.
+Only these fields are accepted (existing required-field rules still apply):
+
+| Object | Allowed fields |
+| --- | --- |
+| Graph root | `name`, `target`, `inputs`, `ops`, `outputs` |
+| Tensor specification under `inputs` | `shape`, `dtype` |
+| Non-null `target` | `peak_compute_gflops`, `memory_bandwidth_gbps` |
+| Each operation in `ops` | `name`, `op`, `inputs`, `outputs` |
+
+This policy applies to mapping APIs such as `parse_graph(payload)` and
+`analyze_graph(payload)` as well as graph files loaded directly or through a
+benchmark. Generic Python mappings remain accepted; validation does not mutate
+them. The `inputs` object itself is a map of arbitrary non-empty tensor names,
+not a fixed-field schema object. Benchmark case names and budget per-case keys
+also remain dynamic and are not subject to the graph field allowlists.
+
+Unknown fields raise `GraphValidationError` with the object path and sorted,
+quoted field names, for example `inputs['lhs'] has unknown field(s): 'layout',
+'strides'`. Paths are `graph` for the root, `inputs['NAME']` for a tensor
+specification, `target`, or `ops[INDEX]`. Single-graph CLI modes return status `2`,
+empty stdout, and `error: PATH has unknown field(s): ...` on stderr. Benchmark
+mode prefixes graph errors with `benchmark case 'NAME':` and validates even
+unselected graph files.
+
 Graph JSON object keys must be unique within each object, including input names,
 tensor specifications, operations, targets, and any nested extra fields.
 `load_graph(path)` rejects duplicate keys before schema validation with
@@ -281,6 +306,8 @@ repeated shape dimensions and operation operands remain valid, while top-level
 output names must still be unique and retain declaration order. Mapping-based
 APIs such as `parse_graph(payload)` cannot detect keys already overwritten by
 an external JSON decoder; use `load_graph(path)` to enforce this policy on files.
+Duplicate-key detection precedes schema validation, including inside extra
+fields that would otherwise be rejected by the strict field policy.
 
 ```json
 {

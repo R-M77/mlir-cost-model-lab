@@ -41,6 +41,19 @@ def _require_mapping(value: object, label: str) -> Mapping[str, Any]:
     return value
 
 
+def _reject_unknown_fields(
+    spec: Mapping[str, Any], allowed_fields: set[str], label: str
+) -> None:
+    # Keep JSON field names alphabetical; do not compare mixed mapping key types.
+    unknown_fields = sorted(
+        (key for key in spec if key not in allowed_fields),
+        key=lambda key: (not isinstance(key, str), key if isinstance(key, str) else repr(key)),
+    )
+    if unknown_fields:
+        names = ", ".join(repr(key) for key in unknown_fields)
+        raise GraphValidationError(f"{label} has unknown field(s): {names}")
+
+
 def _require_nonempty_string(value: object, label: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise GraphValidationError(f"{label} must be a non-empty string")
@@ -62,6 +75,7 @@ def _parse_shape(value: object, label: str) -> tuple[int, ...]:
 
 def _parse_tensor(name: str, value: object, label: str) -> Tensor:
     spec = _require_mapping(value, label)
+    _reject_unknown_fields(spec, {"shape", "dtype"}, f"inputs[{name!r}]")
     shape = _parse_shape(spec.get("shape"), label)
     dtype = spec.get("dtype")
     if not isinstance(dtype, str) or dtype not in DTYPE_BYTES:
@@ -89,6 +103,9 @@ def _parse_target(value: object) -> Target | None:
     if value is None:
         return None
     spec = _require_mapping(value, "target")
+    _reject_unknown_fields(
+        spec, {"peak_compute_gflops", "memory_bandwidth_gbps"}, "target"
+    )
     return Target(
         peak_compute_gflops=_parse_target_number(
             spec.get("peak_compute_gflops"), "target.peak_compute_gflops"
@@ -190,8 +207,9 @@ def _infer_output(kind: str, inputs: tuple[Tensor, ...], output_name: str) -> Te
 
 
 def parse_graph(payload: Mapping[str, Any]) -> Graph:
-    """Validate a JSON-compatible mapping and infer all operation outputs."""
+    """Validate a mapping, rejecting unknown schema fields, and infer outputs."""
     root = _require_mapping(payload, "graph")
+    _reject_unknown_fields(root, {"name", "target", "inputs", "ops", "outputs"}, "graph")
     name = _require_nonempty_string(root.get("name"), "name")
     target = _parse_target(root.get("target"))
 
@@ -218,6 +236,7 @@ def parse_graph(payload: Mapping[str, Any]) -> Graph:
 
     for index, raw_op in enumerate(raw_ops):
         op = _require_mapping(raw_op, f"ops[{index}]")
+        _reject_unknown_fields(op, {"name", "op", "inputs", "outputs"}, f"ops[{index}]")
         op_name = _require_nonempty_string(op.get("name"), f"ops[{index}].name")
         if op_name in operation_names:
             raise GraphValidationError(f"duplicate operation name {op_name!r}")

@@ -4,8 +4,10 @@ import json
 import os
 import subprocess
 import sys
+from collections import UserDict
 from copy import deepcopy
 from pathlib import Path
+from types import MappingProxyType
 
 import pytest
 
@@ -549,6 +551,157 @@ def test_graph_can_be_loaded_from_json_file(tmp_path: Path) -> None:
 
     assert graph.name == "matmul_bias_relu"
     assert len(graph.operations) == 3
+
+
+UNKNOWN_GRAPH_FIELD_CASES = [
+    pytest.param((), "graph", id="graph-root"),
+    pytest.param(("inputs", "lhs"), "inputs['lhs']", id="tensor-spec"),
+    pytest.param(("target",), "target", id="target"),
+    pytest.param(("ops", 1), "ops[1]", id="operation"),
+]
+
+
+@pytest.mark.parametrize(("path", "label"), UNKNOWN_GRAPH_FIELD_CASES)
+@pytest.mark.parametrize("keys", [("typo",), ("z_extra", "a_extra"), ("z'quoted", "a_extra")])
+@pytest.mark.parametrize("mapping_type", [dict, UserDict, MappingProxyType])
+def test_graph_schema_rejects_unknown_fields_in_mappings_and_files(
+    tmp_path: Path, path: tuple, label: str, keys: tuple[str, ...], mapping_type
+) -> None:
+    payload = deepcopy(EXAMPLE_GRAPH)
+    payload["target"] = {"peak_compute_gflops": 100, "memory_bandwidth_gbps": 10}
+    spec = payload
+    for key in path:
+        spec = spec[key]
+    message = f"{label} has unknown field(s): " + ", ".join(repr(key) for key in sorted(keys))
+    original = deepcopy(payload)
+
+    # Insertion order must not affect diagnostics, nor may validation mutate input.
+    for ordered_keys in (keys, tuple(reversed(keys))):
+        for key in ordered_keys:
+            spec[key] = None
+        invalid = deepcopy(payload)
+        with pytest.raises(GraphValidationError) as error:
+            parse_graph(mapping_type(payload))
+        assert str(error.value) == message
+        for optimize in (False, True):
+            with pytest.raises(GraphValidationError) as error:
+                analyze_graph(mapping_type(payload), optimize=optimize)
+            assert str(error.value) == message
+        assert payload == invalid
+
+        graph_path = tmp_path / "unknown_fields.json"
+        graph_path.write_text(json.dumps(payload), encoding="utf-8")
+        with pytest.raises(GraphValidationError) as error:
+            load_graph(graph_path)
+        assert str(error.value) == message
+        for key in keys:
+            del spec[key]
+    assert payload == original
+
+
+@pytest.mark.parametrize(("path", "label"), UNKNOWN_GRAPH_FIELD_CASES)
+def test_graph_schema_rejects_non_string_mapping_fields_without_type_error(
+    path: tuple, label: str
+) -> None:
+    payload = deepcopy(EXAMPLE_GRAPH)
+    payload["target"] = {"peak_compute_gflops": 100, "memory_bandwidth_gbps": 10}
+    spec: dict = payload
+    for key in path:
+        spec = spec[key]
+    spec.update({1: None, "typo": None, None: None})
+
+    with pytest.raises(GraphValidationError) as error:
+        parse_graph(payload)
+    assert str(error.value) == f"{label} has unknown field(s): 'typo', 1, None"
+
+
+@pytest.mark.parametrize(("path", "label"), UNKNOWN_GRAPH_FIELD_CASES)
+@pytest.mark.parametrize(
+    "options", [[], ["--optimize"], ["--lower-matmul"], ["--emit-mlir"]]
+)
+def test_cli_rejects_unknown_graph_fields_deterministically(
+    tmp_path: Path, path: tuple, label: str, options: list[str]
+) -> None:
+    payload = deepcopy(EXAMPLE_GRAPH)
+    payload["target"] = {"peak_compute_gflops": 100, "memory_bandwidth_gbps": 10}
+    spec = payload
+    for key in path:
+        spec = spec[key]
+    spec.update(z_extra=None, a_extra=None)
+    graph_path = tmp_path / "unknown_fields.json"
+    graph_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    for _ in range(2):
+        result = subprocess.run(
+            [sys.executable, "-m", "cost_model", *options, str(graph_path)],
+            capture_output=True,
+            text=True,
+            check=False,
+            env={**os.environ, "PYTHONPATH": "src"},
+        )
+        assert result.returncode == 2
+        assert result.stdout == ""
+        assert result.stderr == f"error: {label} has unknown field(s): 'a_extra', 'z_extra'\n"
+
+
+@pytest.mark.parametrize("mapping_type", [UserDict, MappingProxyType])
+@pytest.mark.parametrize("target", [None, {"peak_compute_gflops": 100, "memory_bandwidth_gbps": 10}])
+@pytest.mark.parametrize("input_name", ["metadata", "shape", "target", "odd['name']"])
+def test_graph_schema_preserves_nested_mappings_and_dynamic_input_names(
+    mapping_type, target: dict | None, input_name: str
+) -> None:
+    payload = deepcopy(SOFTMAX_GRAPH)
+    payload["target"] = target
+    payload["inputs"][input_name] = payload["inputs"].pop("source")
+    payload["ops"][0]["inputs"] = [input_name]
+    original = deepcopy(payload)
+    expected = parse_graph(payload)
+    payload["inputs"][input_name] = mapping_type(payload["inputs"][input_name])
+    payload["inputs"] = mapping_type(payload["inputs"])
+    payload["ops"] = [mapping_type(op) for op in payload["ops"]]
+    if target is not None:
+        payload["target"] = mapping_type(target)
+
+    assert parse_graph(mapping_type(payload)) == expected
+    assert analyze_graph(mapping_type(payload)) == analyze_graph(original)
+    assert payload == original
+
+
+def test_strict_graph_schema_preserves_dynamic_benchmark_and_budget_case_names(
+    tmp_path: Path,
+) -> None:
+    payload = deepcopy(SOFTMAX_GRAPH)
+    payload["inputs"]["metadata"] = payload["inputs"].pop("source")
+    payload["ops"][0]["inputs"] = ["metadata"]
+    (tmp_path / "graph.json").write_text(json.dumps(payload), encoding="utf-8")
+    case_name = "arbitrary.case['metadata']"
+    benchmark_path = tmp_path / "benchmark.json"
+    benchmark_path.write_text(
+        json.dumps([{"name": case_name, "path": "graph.json"}]), encoding="utf-8"
+    )
+    budget_path = tmp_path / "budget.json"
+    budget_path.write_text(
+        json.dumps({"aggregate": {"flops": 1000}, "cases": {case_name: {"flops": 1000}}}),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable, "-m", "cost_model", "--benchmark", str(benchmark_path),
+            "--case", case_name, "--budget", str(budget_path),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        env={**os.environ, "PYTHONPATH": "src"},
+    )
+    assert result.returncode == 0
+    assert result.stderr == ""
+    report = json.loads(result.stdout)
+    assert report["cases"] == [
+        {"name": case_name, "path": "graph.json", "report": analyze_graph(payload)}
+    ]
+    assert report["summary"]["case_count"] == 1
 
 
 DUPLICATE_GRAPH_KEY_CASES = [
