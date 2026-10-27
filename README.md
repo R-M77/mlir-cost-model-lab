@@ -94,6 +94,11 @@ each input element is read once across all output tiles. Its bytes and roofline
 total therefore equal the high-level model; tile/lane choices change
 instruction-template counts, not measured runtime.
 
+Tile size and vector width must be positive integers. Non-default values require
+`mode="tiled"` in the Python lowering APIs or `--lower-matmul --lowering-mode tiled`
+on the CLI; otherwise they are rejected rather than silently ignored. Scalar
+lowering accepts omitted or explicit defaults (`tile_size=16`, `vector_width=4`).
+
 Tiles span M, N, and K, including ragged final tiles. Vectorization is **only
 along N**, independently within each N tile: `divmod(tile_columns, vector_width)`
 gives full-width vector operations and individual scalar-tail operations.

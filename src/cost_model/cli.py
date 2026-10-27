@@ -480,6 +480,10 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     violations: list[dict[str, Any]] = []
     try:
+        if not args.lower_matmul and (args.tile_size != 16 or args.vector_width != 4):
+            raise GraphValidationError(
+                "non-default tile_size/vector_width require tiled lowering"
+            )
         budget = _load_budget(args.budget) if args.budget is not None else None
         if args.benchmark is not None:
             report = _benchmark_report(

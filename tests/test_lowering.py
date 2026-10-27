@@ -158,23 +158,69 @@ def test_tiled_lowering_preserves_flops_and_models_tile_reuse() -> None:
     assert report["after"]["representation"]["vector_width"] == 2
 
 
-def _compare_with_parameter(as_graph: bool, parameter: str, value: Any) -> dict[str, Any]:
-    kwargs = {parameter: value}
+def _compare_with_parameters(as_graph: bool, **kwargs: Any) -> dict[str, Any]:
     if as_graph:
         return compare_matmul_lowering_graph(
-            parse_graph(_fixture_payload()), mode="tiled", **kwargs
+            parse_graph(_fixture_payload()), **kwargs
         )
-    return compare_matmul_lowering(_fixture_payload(), mode="tiled", **kwargs)
+    return compare_matmul_lowering(_fixture_payload(), **kwargs)
 
 
 @pytest.mark.parametrize("as_graph", [False, True], ids=["payload", "graph"])
+@pytest.mark.parametrize("mode", ["scalar", "tiled"])
 @pytest.mark.parametrize("parameter", ["tile_size", "vector_width"])
 @pytest.mark.parametrize("value", [True, False, 2.0, -1.5, "2", None, 0, -2])
 def test_matmul_lowering_rejects_invalid_parameters(
-    as_graph: bool, parameter: str, value: Any
+    as_graph: bool, mode: str, parameter: str, value: Any
 ) -> None:
     with pytest.raises(LoweringValidationError, match=rf"^{parameter} must be a positive integer$"):
-        _compare_with_parameter(as_graph, parameter, value)
+        _compare_with_parameters(as_graph, mode=mode, **{parameter: value})
+
+
+@pytest.mark.parametrize("as_graph", [False, True], ids=["payload", "graph"])
+@pytest.mark.parametrize("mode_kwargs", [{}, {"mode": "scalar"}], ids=["implicit", "explicit"])
+@pytest.mark.parametrize(
+    "parameters",
+    [{"tile_size": 1}, {"vector_width": 1}, {"tile_size": 32, "vector_width": 8}],
+)
+def test_scalar_lowering_rejects_non_default_parameters_deterministically(
+    as_graph: bool, mode_kwargs: dict[str, Any], parameters: dict[str, int]
+) -> None:
+    for _ in range(2):
+        with pytest.raises(LoweringValidationError) as exc_info:
+            _compare_with_parameters(as_graph, **mode_kwargs, **parameters)
+        assert str(exc_info.value) == "non-default tile_size/vector_width require tiled lowering"
+
+
+@pytest.mark.parametrize("as_graph", [False, True], ids=["payload", "graph"])
+@pytest.mark.parametrize("mode_kwargs", [{}, {"mode": "scalar"}], ids=["implicit", "explicit"])
+@pytest.mark.parametrize(
+    "parameters",
+    [{"tile_size": 16}, {"vector_width": 4}, {"tile_size": 16, "vector_width": 4}],
+)
+def test_scalar_lowering_accepts_explicit_default_parameters(
+    as_graph: bool, mode_kwargs: dict[str, Any], parameters: dict[str, int]
+) -> None:
+    assert _compare_with_parameters(as_graph, **mode_kwargs, **parameters) == (
+        compare_matmul_lowering(_fixture_payload())
+    )
+
+
+@pytest.mark.parametrize("as_graph", [False, True], ids=["payload", "graph"])
+@pytest.mark.parametrize(
+    ("parameters", "message"),
+    [
+        ({"tile_size": 1, "vector_width": False}, "vector_width must be a positive integer"),
+        ({"tile_size": 0, "vector_width": 1}, "tile_size must be a positive integer"),
+        ({"tile_size": 0, "vector_width": 0}, "tile_size must be a positive integer"),
+    ],
+)
+def test_scalar_lowering_validates_positive_integers_before_mode(
+    as_graph: bool, parameters: dict[str, Any], message: str
+) -> None:
+    with pytest.raises(LoweringValidationError) as exc_info:
+        _compare_with_parameters(as_graph, mode="scalar", **parameters)
+    assert str(exc_info.value) == message
 
 
 @pytest.mark.parametrize("as_graph", [False, True], ids=["payload", "graph"])
@@ -182,7 +228,7 @@ def test_matmul_lowering_rejects_invalid_parameters(
 def test_matmul_lowering_accepts_positive_integer_parameters(
     as_graph: bool, parameter: str
 ) -> None:
-    report = _compare_with_parameter(as_graph, parameter, 1)
+    report = _compare_with_parameters(as_graph, mode="tiled", **{parameter: 1})
     assert report["after"]["representation"][parameter] == 1
     assert report["after"]["totals"]["flops"] == report["before"]["totals"]["flops"]
 
@@ -303,6 +349,60 @@ def test_tiled_compact_cli_is_deterministic(tmp_path: Path) -> None:
     assert _tiled_counts(json.loads(first.stdout))["scalar_tail_fma"] == 45
 
 
+@pytest.mark.parametrize(
+    "mode_args",
+    [
+        ("--lower-matmul",),
+        ("--lower-matmul", "--lowering-mode", "scalar"),
+        (),
+        ("--optimize",),
+        ("--emit-mlir",),
+        ("--benchmark",),
+    ],
+    ids=["implicit-scalar", "explicit-scalar", "estimate", "optimize", "mlir", "benchmark"],
+)
+@pytest.mark.parametrize(
+    "parameters",
+    [("--tile-size", "1"), ("--vector-width", "1"),
+     ("--tile-size", "32", "--vector-width", "8")],
+)
+def test_lowering_cli_rejects_non_tiled_parameters_deterministically(
+    mode_args: tuple[str, ...], parameters: tuple[str, ...]
+) -> None:
+    path = (
+        REPO_ROOT / "benchmarks" / "target_bounds.json"
+        if "--benchmark" in mode_args else FIXTURE_PATH
+    )
+    args = (*parameters, *mode_args, str(path))
+    first = _run_cli(*args)
+    second = _run_cli(*args)
+
+    assert first.returncode == second.returncode == 2
+    assert first.stdout == second.stdout == ""
+    assert first.stderr == second.stderr == (
+        "error: non-default tile_size/vector_width require tiled lowering\n"
+    )
+
+
+@pytest.mark.parametrize("mode_args", [(), ("--lowering-mode", "scalar")])
+@pytest.mark.parametrize(
+    "parameters",
+    [("--tile-size", "16"), ("--vector-width", "4"),
+     ("--tile-size", "16", "--vector-width", "4")],
+)
+def test_scalar_lowering_cli_accepts_explicit_defaults(
+    mode_args: tuple[str, ...], parameters: tuple[str, ...]
+) -> None:
+    baseline = _run_cli("--lower-matmul", "--compact", str(FIXTURE_PATH))
+    explicit = _run_cli(
+        "--lower-matmul", *mode_args, *parameters, "--compact", str(FIXTURE_PATH)
+    )
+
+    assert baseline.returncode == explicit.returncode == 0
+    assert baseline.stderr == explicit.stderr == ""
+    assert baseline.stdout == explicit.stdout
+
+
 def test_lowering_mode_requires_lowering_flag() -> None:
     result = _run_cli("--lowering-mode", "tiled", str(FIXTURE_PATH))
 
@@ -321,16 +421,19 @@ def test_lowering_mode_requires_lowering_flag() -> None:
         ("--vector-width", "not-an-int"),
     ],
 )
+@pytest.mark.parametrize("mode", ["scalar", "tiled"])
 def test_lowering_cli_rejects_invalid_tile_parameters_with_status_two(
-    option: str, value: str
+    option: str, value: str, mode: str
 ) -> None:
     result = _run_cli(
-        "--lower-matmul", option, value, str(FIXTURE_PATH)
+        "--lower-matmul", "--lowering-mode", mode, option, value, str(FIXTURE_PATH)
     )
 
     assert result.returncode == 2
     assert result.stdout == ""
     assert "error:" in result.stderr
+    if value != "not-an-int":
+        assert result.stderr.endswith("error: --tile-size and --vector-width must be positive\n")
 
 
 @pytest.mark.parametrize(

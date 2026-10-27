@@ -412,6 +412,10 @@ def compare_matmul_lowering_graph(
     for name, value in (("tile_size", tile_size), ("vector_width", vector_width)):
         if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
             raise LoweringValidationError(f"{name} must be a positive integer")
+    if mode == "scalar" and (tile_size != 16 or vector_width != 4):
+        raise LoweringValidationError(
+            "non-default tile_size/vector_width require tiled lowering"
+        )
     before = estimate_graph(graph)
     if mode == "scalar":
         representation, lowered_operations = _lowered_representation(

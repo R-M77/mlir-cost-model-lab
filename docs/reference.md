@@ -183,6 +183,16 @@ Both `scalar` and `tiled` lowering intentionally reject batched operands with
 `LoweringValidationError`, even when those operands are valid for parsing and
 cost estimation. `compare_matmul_lowering_graph(graph)` has the same scope.
 
+Both Python APIs require positive-integer `tile_size` and `vector_width` values
+(booleans are not integers for this contract). In the default `mode="scalar"`,
+only the defaults `tile_size=16` and `vector_width=4` are accepted, whether omitted
+or explicit. Non-default values raise `LoweringValidationError` with the stable
+diagnostic `non-default tile_size/vector_width require tiled lowering`.
+Positive-integer validation runs before this mode check. On the CLI, non-default
+`--tile-size` or `--vector-width` values require `--lower-matmul --lowering-mode tiled`;
+otherwise the command exits with status `2`, empty stdout, and the same diagnostic
+prefixed by `error:` on stderr. Default values do not enable tiled lowering.
+
 The representation is deliberately not MLIR and has no MLIR dependency. For
 `examples/matmul_lowering.json`, the high-level graph models 48 FLOPs and 104
 logical bytes. The lowered representation keeps 48 FLOPs but models 224
@@ -425,5 +435,6 @@ do not sum per-operation times. Batch times sum per-graph totals. Lower-bound
 interpretation is conditional on the chosen logical-traffic assumptions.
 The tiled model counts full-width N-axis vectors and individual scalar tails
 within each tile, never vectors that cross tile boundaries. Ceiling division
-is used for tile-grid extents, not to count partial vectors. Positive tile/lane CLI options
-are meaningful only for tiled lowering; they may otherwise be ignored.
+is used for tile-grid extents, not to count partial vectors. Non-default tile/lane
+options require tiled lowering and are rejected in other modes; defaults remain
+valid without selecting tiled lowering.
