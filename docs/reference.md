@@ -259,7 +259,9 @@ graph output and exactly its operands as graph inputs (one named input is valid
 when both operand references are the same). Batched operands are intentionally
 unsupported and raise `MatmulMlirEmissionError`, even when parsing and estimation
 succeed. Other dtypes accepted by the estimator are also outside this emitter's
-scope.
+scope. For the direct `Graph` API, each `graph.inputs` tensor must equal its
+corresponding `graph.values` definition (name, shape, and dtype); inconsistent
+maps raise `MatmulMlirEmissionError` rather than silently using one definition.
 
 The emitted `module` contains `func.func`, `tensor.empty`, an `arith.constant`
 zero, `linalg.fill` to initialize the output, `linalg.matmul`, and a return.

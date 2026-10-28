@@ -12,6 +12,7 @@ import pytest
 
 from cost_model import (
     MatmulMlirEmissionError,
+    Tensor,
     emit_matmul_mlir,
     emit_matmul_mlir_graph,
     parse_graph,
@@ -54,6 +55,35 @@ def test_emits_exact_stable_mlir_for_matmul_fixture() -> None:
     assert emit_matmul_mlir(payload) == EXPECTED_MLIR
     assert emit_matmul_mlir_graph(parse_graph(payload)) == EXPECTED_MLIR
     assert emit_matmul_mlir(payload) == emit_matmul_mlir(payload)
+
+
+@pytest.mark.parametrize(
+    ("input_name", "replacement"),
+    [
+        pytest.param("lhs", Tensor("lhs", (1, 2, 3), "f32"), id="lhs-rank"),
+        pytest.param("rhs", Tensor("rhs", (1, 3, 4), "f32"), id="rhs-rank"),
+        pytest.param("lhs", Tensor("lhs", (5, 3), "f32"), id="lhs-shape"),
+        pytest.param("rhs", Tensor("rhs", (3, 5), "f32"), id="rhs-shape"),
+        pytest.param("lhs", Tensor("lhs", (2, 3), "f16"), id="dtype"),
+        pytest.param("lhs", Tensor("renamed", (2, 3), "f32"), id="name"),
+    ],
+)
+def test_emitter_rejects_inconsistent_graph_input_definitions(
+    input_name: str, replacement: Tensor
+) -> None:
+    graph = parse_graph(_fixture_payload())
+    original = graph.values[input_name]
+    graph.inputs[input_name] = replacement
+    assert graph.values[input_name] == original
+    assert graph.inputs[input_name] != original
+
+    with pytest.raises(MatmulMlirEmissionError) as exc_info:
+        emit_matmul_mlir_graph(graph)
+
+    assert str(exc_info.value) == (
+        f"matmul MLIR emission requires graph input {input_name!r} "
+        "to match its graph value definition"
+    )
 
 
 def test_emitter_reuses_one_argument_for_repeated_matmul_operand() -> None:
