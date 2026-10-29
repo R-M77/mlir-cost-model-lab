@@ -262,6 +262,9 @@ succeed. Other dtypes accepted by the estimator are also outside this emitter's
 scope. For the direct `Graph` API, each `graph.inputs` tensor must equal its
 corresponding `graph.values` definition (name, shape, and dtype); inconsistent
 maps raise `MatmulMlirEmissionError` rather than silently using one definition.
+Every `graph.values` key must also equal its tensor's `name`, including unused
+values; a mismatch raises `MatmulMlirEmissionError`. Consistently named unused
+values remain accepted and do not change the emitted MLIR.
 
 The emitted `module` contains `func.func`, `tensor.empty`, an `arith.constant`
 zero, `linalg.fill` to initialize the output, `linalg.matmul`, and a return.

@@ -86,6 +86,42 @@ def test_emitter_rejects_inconsistent_graph_input_definitions(
     )
 
 
+@pytest.mark.parametrize(
+    ("value_name", "replacement"),
+    [
+        pytest.param("output", Tensor("stale", (2, 4), "f32"), id="output"),
+        pytest.param("extra", Tensor("other", (9, 9), "f32"), id="unused-value"),
+        pytest.param("lhs", Tensor("stale", (2, 3), "f32"), id="lhs-both-maps"),
+        pytest.param("rhs", Tensor("stale", (3, 4), "f32"), id="rhs-both-maps"),
+    ],
+)
+def test_emitter_rejects_graph_value_key_tensor_name_mismatches(
+    value_name: str, replacement: Tensor
+) -> None:
+    graph = parse_graph(_fixture_payload())
+    graph.values[value_name] = replacement
+    if value_name in graph.inputs:
+        graph.inputs[value_name] = replacement
+
+    with pytest.raises(MatmulMlirEmissionError) as exc_info:
+        emit_matmul_mlir_graph(graph)
+
+    assert str(exc_info.value) == (
+        f"matmul MLIR emission graph value {value_name!r} "
+        f"has mismatched tensor name {replacement.name!r}"
+    )
+
+
+@pytest.mark.parametrize(
+    "extra", [Tensor("extra", (9, 9), "f32"), Tensor("extra", (), "i32")]
+)
+def test_emitter_preserves_mlir_with_consistent_unused_graph_value(extra: Tensor) -> None:
+    graph = parse_graph(_fixture_payload())
+    graph.values[extra.name] = extra
+
+    assert emit_matmul_mlir_graph(graph) == EXPECTED_MLIR
+
+
 def test_emitter_reuses_one_argument_for_repeated_matmul_operand() -> None:
     payload = _fixture_payload()
     payload["inputs"] = {"lhs": {"shape": [2, 2], "dtype": "f32"}}

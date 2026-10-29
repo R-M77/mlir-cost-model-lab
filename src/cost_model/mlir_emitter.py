@@ -59,6 +59,13 @@ def _validate_matmul_graph(graph: Graph) -> tuple[Tensor, Tensor, Tensor]:
                 "to match its graph value definition"
             )
 
+    for value_name, tensor in graph.values.items():
+        if value_name != tensor.name:
+            raise MatmulMlirEmissionError(
+                f"matmul MLIR emission graph value {value_name!r} "
+                f"has mismatched tensor name {tensor.name!r}"
+            )
+
     if len(lhs.shape) != 2 or len(rhs.shape) != 2:
         raise MatmulMlirEmissionError(
             "matmul MLIR emission requires rank-2 input tensors"
