@@ -5,6 +5,7 @@ import os
 import subprocess
 import sys
 from copy import deepcopy
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -120,6 +121,39 @@ def test_emitter_preserves_mlir_with_consistent_unused_graph_value(extra: Tensor
     graph.values[extra.name] = extra
 
     assert emit_matmul_mlir_graph(graph) == EXPECTED_MLIR
+
+
+@pytest.mark.parametrize(
+    ("operand_names", "output_name"),
+    [
+        pytest.param(("lhs", "rhs"), "lhs", id="lhs-alias"),
+        pytest.param(("lhs", "rhs"), "rhs", id="rhs-alias"),
+        pytest.param(("lhs", "lhs"), "lhs", id="repeated-input-alias"),
+    ],
+)
+def test_emitter_rejects_matmul_result_aliasing_graph_input(
+    operand_names: tuple[str, str], output_name: str
+) -> None:
+    payload = _fixture_payload()
+    payload["inputs"] = {
+        name: {"shape": [2, 2], "dtype": "f32"} for name in operand_names
+    }
+    payload["ops"][0]["inputs"] = list(operand_names)
+    graph = parse_graph(payload)
+    assert emit_matmul_mlir_graph(graph) == emit_matmul_mlir(payload)
+
+    graph = replace(
+        graph,
+        operations=(replace(graph.operations[0], output=output_name),),
+        outputs=(output_name,),
+    )
+
+    with pytest.raises(MatmulMlirEmissionError) as exc_info:
+        emit_matmul_mlir_graph(graph)
+
+    assert str(exc_info.value) == (
+        "matmul MLIR emission requires the matmul result to be distinct from graph inputs"
+    )
 
 
 def test_emitter_reuses_one_argument_for_repeated_matmul_operand() -> None:

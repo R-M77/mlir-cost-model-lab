@@ -264,7 +264,11 @@ corresponding `graph.values` definition (name, shape, and dtype); inconsistent
 maps raise `MatmulMlirEmissionError` rather than silently using one definition.
 Every `graph.values` key must also equal its tensor's `name`, including unused
 values; a mismatch raises `MatmulMlirEmissionError`. Consistently named unused
-values remain accepted and do not change the emitted MLIR.
+values remain accepted and do not change the emitted MLIR. The operation's
+`output` name must not be a key in `graph.inputs`, even when `graph.outputs`
+matches that name and the input has the inferred result shape and dtype;
+result/input name reuse raises `MatmulMlirEmissionError`. Repeated operand
+references remain valid when the result has a distinct name.
 
 The emitted `module` contains `func.func`, `tensor.empty`, an `arith.constant`
 zero, `linalg.fill` to initialize the output, `linalg.matmul`, and a return.

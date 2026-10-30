@@ -43,6 +43,11 @@ def _validate_matmul_graph(graph: Graph) -> tuple[Tensor, Tensor, Tensor]:
             "matmul MLIR emission requires exactly the matmul operands as graph inputs"
         )
 
+    if operation.output in graph.inputs:
+        raise MatmulMlirEmissionError(
+            "matmul MLIR emission requires the matmul result to be distinct from graph inputs"
+        )
+
     try:
         lhs = graph.values[operation.inputs[0]]
         rhs = graph.values[operation.inputs[1]]
