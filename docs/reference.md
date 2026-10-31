@@ -270,6 +270,10 @@ matches that name and the input has the inferred result shape and dtype;
 result/input name reuse raises `MatmulMlirEmissionError`. Repeated operand
 references remain valid when the result has a distinct name.
 
+`Graph.name` and `Operation.name` are labels, not emitted symbol names. Changing
+either leaves the emitted text unchanged: the function is always `@matmul`,
+with stable SSA names independent of those labels.
+
 The emitted `module` contains `func.func`, `tensor.empty`, an `arith.constant`
 zero, `linalg.fill` to initialize the output, `linalg.matmul`, and a return.
 This is separate from the counted lowering representations: emitting text does

@@ -58,6 +58,19 @@ def test_emits_exact_stable_mlir_for_matmul_fixture() -> None:
     assert emit_matmul_mlir(payload) == emit_matmul_mlir(payload)
 
 
+@pytest.mark.parametrize("name_owner", ["graph", "operation"])
+def test_emitter_ignores_graph_and_operation_names(name_owner: str) -> None:
+    graph = parse_graph(_fixture_payload())
+    if name_owner == "graph":
+        graph = replace(graph, name="renamed graph")
+    else:
+        graph = replace(
+            graph, operations=(replace(graph.operations[0], name="renamed operation"),)
+        )
+
+    assert emit_matmul_mlir_graph(graph) == EXPECTED_MLIR
+
+
 @pytest.mark.parametrize(
     ("input_name", "replacement"),
     [
