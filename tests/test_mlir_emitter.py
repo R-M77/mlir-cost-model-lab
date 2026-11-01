@@ -169,6 +169,123 @@ def test_emitter_rejects_matmul_result_aliasing_graph_input(
     )
 
 
+@pytest.mark.parametrize(
+    "outputs",
+    [
+        pytest.param((), id="empty"),
+        pytest.param(("output", "output"), id="duplicate"),
+        pytest.param(("output", "lhs"), id="extra-output"),
+        pytest.param(("lhs",), id="input-only"),
+        pytest.param(("missing",), id="unknown"),
+        pytest.param(["output"], id="list"),
+        pytest.param("output", id="string"),
+        pytest.param(None, id="none"),
+        pytest.param(7, id="integer"),
+        pytest.param((["output"],), id="nested-list"),
+    ],
+)
+def test_emitter_rejects_direct_graph_output_mutations(outputs: Any) -> None:
+    graph = replace(parse_graph(_fixture_payload()), outputs=outputs)
+
+    with pytest.raises(MatmulMlirEmissionError) as exc_info:
+        emit_matmul_mlir_graph(graph)
+
+    assert str(exc_info.value) == (
+        "matmul MLIR emission requires the matmul result to be the only graph output"
+    )
+
+
+@pytest.mark.parametrize("match_outputs", [False, True])
+def test_emitter_rejects_unknown_direct_operation_output(match_outputs: bool) -> None:
+    graph = parse_graph(_fixture_payload())
+    graph = replace(
+        graph,
+        operations=(replace(graph.operations[0], output="missing"),),
+        outputs=("missing",) if match_outputs else graph.outputs,
+    )
+
+    with pytest.raises(MatmulMlirEmissionError) as exc_info:
+        emit_matmul_mlir_graph(graph)
+
+    assert str(exc_info.value) == (
+        "matmul MLIR emission references unknown value 'missing'"
+        if match_outputs
+        else "matmul MLIR emission requires the matmul result to be the only graph output"
+    )
+
+
+@pytest.mark.parametrize(
+    "output_name",
+    [
+        pytest.param("", id="empty"),
+        pytest.param(" \t\n", id="whitespace"),
+        pytest.param(None, id="none"),
+        pytest.param(7, id="integer"),
+        pytest.param(True, id="boolean"),
+        pytest.param(("output",), id="tuple"),
+    ],
+)
+@pytest.mark.parametrize("register_value", [False, True])
+def test_emitter_rejects_invalid_direct_result_names(
+    output_name: Any, register_value: bool
+) -> None:
+    graph = parse_graph(_fixture_payload())
+    if register_value:
+        graph.values[output_name] = replace(graph.values["output"], name=output_name)
+    graph = replace(
+        graph,
+        operations=(replace(graph.operations[0], output=output_name),),
+        outputs=(output_name,),
+    )
+
+    with pytest.raises(MatmulMlirEmissionError) as exc_info:
+        emit_matmul_mlir_graph(graph)
+
+    assert str(exc_info.value) == (
+        "matmul MLIR emission requires a non-empty string matmul result name"
+    )
+
+
+@pytest.mark.parametrize("output_name", [["output"], {"value": "output"}])
+def test_emitter_rejects_unhashable_direct_result_names(output_name: Any) -> None:
+    graph = parse_graph(_fixture_payload())
+    graph = replace(
+        graph,
+        operations=(replace(graph.operations[0], output=output_name),),
+        outputs=(output_name,),
+    )
+
+    with pytest.raises(MatmulMlirEmissionError) as exc_info:
+        emit_matmul_mlir_graph(graph)
+
+    assert str(exc_info.value) == (
+        "matmul MLIR emission requires a non-empty string matmul result name"
+    )
+
+
+@pytest.mark.parametrize("output_name", ["renamed", " result % ! \n"])
+@pytest.mark.parametrize("repeated_operand", [False, True])
+def test_emitter_preserves_mlir_with_consistently_renamed_result(
+    output_name: str, repeated_operand: bool
+) -> None:
+    payload = _fixture_payload()
+    if repeated_operand:
+        payload["inputs"] = {"lhs": {"shape": [2, 2], "dtype": "f32"}}
+        payload["ops"][0]["inputs"] = ["lhs", "lhs"]
+    graph = parse_graph(payload)
+    expected = emit_matmul_mlir_graph(graph)
+    # Retain the old result as a consistently named unused value.
+    graph.values[output_name] = replace(graph.values["output"], name=output_name)
+    graph = replace(
+        graph,
+        operations=(replace(graph.operations[0], output=output_name),),
+        outputs=(output_name,),
+    )
+
+    assert emit_matmul_mlir_graph(graph) == expected
+    assert emit_matmul_mlir_graph(graph) == expected
+
+
 def test_emitter_reuses_one_argument_for_repeated_matmul_operand() -> None:
     payload = _fixture_payload()
     payload["inputs"] = {"lhs": {"shape": [2, 2], "dtype": "f32"}}

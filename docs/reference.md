@@ -268,7 +268,13 @@ values remain accepted and do not change the emitted MLIR. The operation's
 `output` name must not be a key in `graph.inputs`, even when `graph.outputs`
 matches that name and the input has the inferred result shape and dtype;
 result/input name reuse raises `MatmulMlirEmissionError`. Repeated operand
-references remain valid when the result has a distinct name.
+references remain valid when the result has a distinct name. For direct graphs,
+`Operation.output` must be a non-empty string (not whitespace-only), as in the
+parser, and `Graph.outputs` must be the one-element tuple containing that name.
+Invalid result names raise `MatmulMlirEmissionError` before dictionary lookup,
+even when `graph.outputs` and `graph.values` use the same invalid name.
+Consistently renaming the result and its value definition leaves MLIR unchanged;
+the result name need not be an MLIR identifier and is not normalized.
 
 `Graph.name` and `Operation.name` are labels, not emitted symbol names. Changing
 either leaves the emitted text unchanged: the function is always `@matmul`,

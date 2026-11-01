@@ -29,6 +29,10 @@ def _validate_matmul_graph(graph: Graph) -> tuple[Tensor, Tensor, Tensor]:
         raise MatmulMlirEmissionError(
             "matmul MLIR emission requires a single matmul operation"
         )
+    if not isinstance(operation.output, str) or not operation.output.strip():
+        raise MatmulMlirEmissionError(
+            "matmul MLIR emission requires a non-empty string matmul result name"
+        )
     if graph.outputs != (operation.output,):
         raise MatmulMlirEmissionError(
             "matmul MLIR emission requires the matmul result to be the only graph output"
