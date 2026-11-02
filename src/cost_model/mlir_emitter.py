@@ -37,11 +37,19 @@ def _validate_matmul_graph(graph: Graph) -> tuple[Tensor, Tensor, Tensor]:
         raise MatmulMlirEmissionError(
             "matmul MLIR emission requires the matmul result to be the only graph output"
         )
-    if len(operation.inputs) != 2:
+    if not isinstance(operation.inputs, tuple) or len(operation.inputs) != 2:
         raise MatmulMlirEmissionError(
             "matmul MLIR emission requires exactly two matmul inputs"
         )
+    if any(not isinstance(name, str) or not name.strip() for name in operation.inputs):
+        raise MatmulMlirEmissionError(
+            "matmul MLIR emission requires non-empty string matmul input names"
+        )
 
+    if not isinstance(graph.inputs, Mapping):
+        raise MatmulMlirEmissionError(
+            "matmul MLIR emission requires graph inputs to be a mapping"
+        )
     if len(graph.inputs) not in {1, 2} or set(graph.inputs) != set(operation.inputs):
         raise MatmulMlirEmissionError(
             "matmul MLIR emission requires exactly the matmul operands as graph inputs"

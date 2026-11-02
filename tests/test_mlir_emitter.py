@@ -7,6 +7,7 @@ import sys
 from copy import deepcopy
 from dataclasses import replace
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 
 import pytest
@@ -72,6 +73,134 @@ def test_emitter_ignores_graph_and_operation_names(name_owner: str) -> None:
 
 
 @pytest.mark.parametrize(
+    "inputs",
+    [
+        pytest.param(None, id="none"),
+        pytest.param(7, id="integer"),
+        pytest.param("lr", id="string"),
+        pytest.param(["lhs", "rhs"], id="list"),
+        pytest.param({"lhs": "lhs", "rhs": "rhs"}, id="mapping"),
+        pytest.param({"lhs", "rhs"}, id="set"),
+        pytest.param((), id="empty"),
+        pytest.param(("lhs",), id="one-operand"),
+        pytest.param(("lhs", "rhs", "lhs"), id="three-operands"),
+    ],
+)
+def test_emitter_rejects_direct_operation_input_containers(inputs: Any) -> None:
+    graph = parse_graph(_fixture_payload())
+    graph = replace(graph, operations=(replace(graph.operations[0], inputs=inputs),))
+
+    with pytest.raises(MatmulMlirEmissionError) as exc_info:
+        emit_matmul_mlir_graph(graph)
+
+    assert str(exc_info.value) == (
+        "matmul MLIR emission requires exactly two matmul inputs"
+    )
+
+
+@pytest.mark.parametrize(
+    "input_name",
+    [
+        pytest.param("", id="empty"),
+        pytest.param(" \t\n", id="whitespace"),
+        pytest.param(None, id="none"),
+        pytest.param(7, id="integer"),
+        pytest.param(True, id="boolean"),
+        pytest.param(("lhs",), id="tuple"),
+        pytest.param(["lhs"], id="list"),
+        pytest.param({"value": "lhs"}, id="mapping"),
+        pytest.param({"lhs"}, id="set"),
+    ],
+)
+@pytest.mark.parametrize("operand_index", [0, 1])
+def test_emitter_rejects_invalid_direct_operand_names(
+    input_name: Any, operand_index: int
+) -> None:
+    graph = parse_graph(_fixture_payload())
+    inputs = list(graph.operations[0].inputs)
+    inputs[operand_index] = input_name
+    graph = replace(
+        graph, operations=(replace(graph.operations[0], inputs=tuple(inputs)),)
+    )
+
+    with pytest.raises(MatmulMlirEmissionError) as exc_info:
+        emit_matmul_mlir_graph(graph)
+
+    assert str(exc_info.value) == (
+        "matmul MLIR emission requires non-empty string matmul input names"
+    )
+
+
+@pytest.mark.parametrize(
+    "inputs",
+    [
+        pytest.param(None, id="none"),
+        pytest.param(7, id="integer"),
+        pytest.param("lr", id="string"),
+        pytest.param(("lhs", "rhs"), id="tuple"),
+        pytest.param(["lhs", "rhs"], id="list"),
+        pytest.param({"lhs", "rhs"}, id="set"),
+        pytest.param([["lhs"], ["rhs"]], id="nested-list"),
+    ],
+)
+def test_emitter_rejects_direct_graph_input_containers(inputs: Any) -> None:
+    graph = replace(parse_graph(_fixture_payload()), inputs=inputs)
+
+    with pytest.raises(MatmulMlirEmissionError) as exc_info:
+        emit_matmul_mlir_graph(graph)
+
+    assert str(exc_info.value) == (
+        "matmul MLIR emission requires graph inputs to be a mapping"
+    )
+
+
+@pytest.mark.parametrize("input_name", ["", " \t\n", None, 7, True, ("lhs",)])
+def test_emitter_rejects_invalid_direct_graph_input_keys(input_name: Any) -> None:
+    graph = parse_graph(_fixture_payload())
+    graph.inputs[input_name] = graph.inputs.pop("lhs")
+
+    with pytest.raises(MatmulMlirEmissionError) as exc_info:
+        emit_matmul_mlir_graph(graph)
+
+    assert str(exc_info.value) == (
+        "matmul MLIR emission requires exactly the matmul operands as graph inputs"
+    )
+
+
+@pytest.mark.parametrize("input_name", ["lhs", "rhs"])
+def test_emitter_rejects_direct_operand_missing_from_graph_values(input_name: str) -> None:
+    graph = parse_graph(_fixture_payload())
+    del graph.values[input_name]
+
+    with pytest.raises(MatmulMlirEmissionError) as exc_info:
+        emit_matmul_mlir_graph(graph)
+
+    assert str(exc_info.value) == (
+        f"matmul MLIR emission references unknown value {input_name!r}"
+    )
+
+
+@pytest.mark.parametrize("readonly_inputs", [False, True])
+@pytest.mark.parametrize("repeated_operand", [False, True])
+def test_emitter_preserves_valid_direct_graph_input_mappings(
+    readonly_inputs: bool, repeated_operand: bool
+) -> None:
+    payload = _fixture_payload()
+    if repeated_operand:
+        payload["inputs"] = {"lhs": {"shape": [2, 2], "dtype": "f32"}}
+        payload["ops"][0]["inputs"] = ["lhs", "lhs"]
+    expected = emit_matmul_mlir(payload)
+    graph = parse_graph(payload)
+    # Input declaration order must not change operand order or SSA argument reuse.
+    inputs = dict(reversed(list(graph.inputs.items())))
+    graph = replace(
+        graph, inputs=MappingProxyType(inputs) if readonly_inputs else inputs
+    )
+
+    assert emit_matmul_mlir_graph(graph) == expected
+
+
+@pytest.mark.parametrize(
     ("input_name", "replacement"),
     [
         pytest.param("lhs", Tensor("lhs", (1, 2, 3), "f32"), id="lhs-rank"),
@@ -80,10 +209,12 @@ def test_emitter_ignores_graph_and_operation_names(name_owner: str) -> None:
         pytest.param("rhs", Tensor("rhs", (3, 5), "f32"), id="rhs-shape"),
         pytest.param("lhs", Tensor("lhs", (2, 3), "f16"), id="dtype"),
         pytest.param("lhs", Tensor("renamed", (2, 3), "f32"), id="name"),
+        pytest.param("lhs", None, id="none"),
+        pytest.param("rhs", ["rhs"], id="list"),
     ],
 )
 def test_emitter_rejects_inconsistent_graph_input_definitions(
-    input_name: str, replacement: Tensor
+    input_name: str, replacement: Any
 ) -> None:
     graph = parse_graph(_fixture_payload())
     original = graph.values[input_name]

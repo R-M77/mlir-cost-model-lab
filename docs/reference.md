@@ -259,9 +259,13 @@ graph output and exactly its operands as graph inputs (one named input is valid
 when both operand references are the same). Batched operands are intentionally
 unsupported and raise `MatmulMlirEmissionError`, even when parsing and estimation
 succeed. Other dtypes accepted by the estimator are also outside this emitter's
-scope. For the direct `Graph` API, each `graph.inputs` tensor must equal its
-corresponding `graph.values` definition (name, shape, and dtype); inconsistent
-maps raise `MatmulMlirEmissionError` rather than silently using one definition.
+scope. For the direct `Graph` API, `Operation.inputs` must be a two-element
+tuple of non-empty strings (not whitespace-only), and `Graph.inputs` must be a
+mapping with exactly those operand names as keys. Malformed containers or
+operand names raise `MatmulMlirEmissionError` before set construction or keyed
+lookup. Each `graph.inputs` tensor must equal its corresponding `graph.values`
+definition (name, shape, and dtype); inconsistent maps raise
+`MatmulMlirEmissionError` rather than silently using one definition.
 Every `graph.values` key must also equal its tensor's `name`, including unused
 values; a mismatch raises `MatmulMlirEmissionError`. Consistently named unused
 values remain accepted and do not change the emitted MLIR. The operation's
