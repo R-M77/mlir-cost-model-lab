@@ -73,6 +73,92 @@ def test_emitter_ignores_graph_and_operation_names(name_owner: str) -> None:
 
 
 @pytest.mark.parametrize(
+    "operations",
+    [
+        pytest.param(None, id="none"),
+        pytest.param(7, id="integer"),
+        pytest.param("x", id="string"),
+        pytest.param({"op": "matmul"}, id="mapping"),
+        pytest.param({"matmul"}, id="set"),
+        pytest.param((), id="empty-tuple"),
+        pytest.param([], id="empty-list"),
+        pytest.param((None, None), id="two-operations"),
+    ],
+)
+def test_emitter_rejects_direct_operation_containers(operations: Any) -> None:
+    graph = replace(parse_graph(_fixture_payload()), operations=operations)
+
+    with pytest.raises(MatmulMlirEmissionError) as exc_info:
+        emit_matmul_mlir_graph(graph)
+
+    assert str(exc_info.value) == (
+        "matmul MLIR emission requires exactly one operation"
+    )
+
+
+@pytest.mark.parametrize("operation", [None, 7, "matmul", {}, ["matmul"], object()])
+def test_emitter_rejects_non_operation_definitions(operation: Any) -> None:
+    graph = replace(parse_graph(_fixture_payload()), operations=(operation,))
+
+    with pytest.raises(MatmulMlirEmissionError) as exc_info:
+        emit_matmul_mlir_graph(graph)
+
+    assert str(exc_info.value) == (
+        "matmul MLIR emission requires an Operation definition"
+    )
+
+
+@pytest.mark.parametrize("kind", [None, 7, True, [], {}, "", "relu"])
+def test_emitter_rejects_invalid_direct_operation_kinds(kind: Any) -> None:
+    graph = parse_graph(_fixture_payload())
+    graph = replace(graph, operations=(replace(graph.operations[0], kind=kind),))
+
+    with pytest.raises(MatmulMlirEmissionError) as exc_info:
+        emit_matmul_mlir_graph(graph)
+
+    assert str(exc_info.value) == (
+        "matmul MLIR emission requires a single matmul operation"
+    )
+
+
+@pytest.mark.parametrize("field", ["kind", "inputs", "output"])
+def test_emitter_rejects_incomplete_operation_definitions(field: str) -> None:
+    graph = parse_graph(_fixture_payload())
+    object.__delattr__(graph.operations[0], field)
+
+    with pytest.raises(MatmulMlirEmissionError) as exc_info:
+        emit_matmul_mlir_graph(graph)
+
+    assert str(exc_info.value) == (
+        "matmul MLIR emission requires an Operation definition"
+    )
+
+
+def test_emitter_preserves_direct_operation_list() -> None:
+    graph = parse_graph(_fixture_payload())
+    graph = replace(graph, operations=list(graph.operations))
+
+    assert emit_matmul_mlir_graph(graph) == EXPECTED_MLIR
+
+
+@pytest.mark.parametrize(
+    ("field", "message"),
+    [
+        ("operations", "requires exactly one operation"),
+        ("values", "requires graph values to be a mapping"),
+    ],
+)
+def test_emitter_rejects_missing_direct_graph_containers(field: str, message: str) -> None:
+    graph = parse_graph(_fixture_payload())
+    object.__delattr__(graph, field)
+
+    with pytest.raises(MatmulMlirEmissionError) as exc_info:
+        emit_matmul_mlir_graph(graph)
+
+    assert str(exc_info.value) == f"matmul MLIR emission {message}"
+
+
+@pytest.mark.parametrize(
     "inputs",
     [
         pytest.param(None, id="none"),
@@ -167,6 +253,162 @@ def test_emitter_rejects_invalid_direct_graph_input_keys(input_name: Any) -> Non
     )
 
 
+@pytest.mark.parametrize("values", [None, 7, "values", [], (), {"lhs", "rhs"}])
+def test_emitter_rejects_direct_graph_value_containers(values: Any) -> None:
+    graph = replace(parse_graph(_fixture_payload()), values=values)
+
+    with pytest.raises(MatmulMlirEmissionError) as exc_info:
+        emit_matmul_mlir_graph(graph)
+
+    assert str(exc_info.value) == (
+        "matmul MLIR emission requires graph values to be a mapping"
+    )
+
+
+@pytest.mark.parametrize("value_name", ["", " \t\n", None, 7, True, ("extra",)])
+def test_emitter_rejects_invalid_direct_graph_value_keys(value_name: Any) -> None:
+    graph = parse_graph(_fixture_payload())
+    graph.values[value_name] = Tensor(value_name, (), "i32")
+
+    with pytest.raises(MatmulMlirEmissionError) as exc_info:
+        emit_matmul_mlir_graph(graph)
+
+    assert str(exc_info.value) == (
+        "matmul MLIR emission requires non-empty string graph value names"
+    )
+
+
+@pytest.mark.parametrize("value_name", ["lhs", "rhs", "output", "extra"])
+@pytest.mark.parametrize("definition", [None, 7, "tensor", {}, [2, 3], object()])
+def test_emitter_rejects_non_tensor_graph_value_definitions(
+    value_name: str, definition: Any
+) -> None:
+    graph = parse_graph(_fixture_payload())
+    graph.values[value_name] = definition
+    if value_name in graph.inputs:
+        graph.inputs[value_name] = definition
+
+    with pytest.raises(MatmulMlirEmissionError) as exc_info:
+        emit_matmul_mlir_graph(graph)
+
+    assert str(exc_info.value) == (
+        f"matmul MLIR emission graph value {value_name!r} requires a Tensor definition"
+    )
+
+
+@pytest.mark.parametrize("value_name", ["lhs", "rhs", "output", "extra"])
+@pytest.mark.parametrize("field", ["name", "shape", "dtype"])
+def test_emitter_rejects_incomplete_tensor_definitions(
+    value_name: str, field: str
+) -> None:
+    graph = parse_graph(_fixture_payload())
+    if value_name == "extra":
+        graph.values[value_name] = Tensor(value_name, (), "i32")
+    object.__delattr__(graph.values[value_name], field)
+
+    with pytest.raises(MatmulMlirEmissionError) as exc_info:
+        emit_matmul_mlir_graph(graph)
+
+    assert str(exc_info.value) == (
+        f"matmul MLIR emission graph value {value_name!r} requires a Tensor definition"
+    )
+
+
+@pytest.mark.parametrize("value_name", ["lhs", "rhs", "output", "extra"])
+@pytest.mark.parametrize("shape", [None, 7, "2x3", [2, 3], {"shape": [2, 3]}, {2, 3}])
+def test_emitter_rejects_malformed_graph_value_shapes(
+    value_name: str, shape: Any
+) -> None:
+    graph = parse_graph(_fixture_payload())
+    tensor = Tensor(value_name, shape, "f32")
+    graph.values[value_name] = tensor
+    if value_name in graph.inputs:
+        graph.inputs[value_name] = tensor
+
+    with pytest.raises(MatmulMlirEmissionError) as exc_info:
+        emit_matmul_mlir_graph(graph)
+
+    assert str(exc_info.value) == (
+        f"matmul MLIR emission graph value {value_name!r} requires a tuple shape"
+    )
+
+
+@pytest.mark.parametrize("value_name", ["lhs", "rhs", "output", "extra"])
+@pytest.mark.parametrize("dimension", [0, -1, True, 2.0, "2", None, [2], {"size": 2}])
+def test_emitter_rejects_malformed_graph_value_dimensions(
+    value_name: str, dimension: Any
+) -> None:
+    graph = parse_graph(_fixture_payload())
+    tensor = Tensor(value_name, (dimension, 3), "f32")
+    graph.values[value_name] = tensor
+    if value_name in graph.inputs:
+        graph.inputs[value_name] = tensor
+
+    with pytest.raises(MatmulMlirEmissionError) as exc_info:
+        emit_matmul_mlir_graph(graph)
+
+    assert str(exc_info.value) == (
+        f"matmul MLIR emission graph value {value_name!r} "
+        "requires positive integer shape dimensions"
+    )
+
+
+@pytest.mark.parametrize("dtype", [None, 7, True, [], {}, "", "unknown"])
+@pytest.mark.parametrize("value_name", ["lhs", "rhs", "output", "extra"])
+def test_emitter_rejects_malformed_graph_value_dtypes(
+    value_name: str, dtype: Any
+) -> None:
+    graph = parse_graph(_fixture_payload())
+    original = graph.values.get(value_name, Tensor(value_name, (), "i32"))
+    tensor = replace(original, dtype=dtype)
+    graph.values[value_name] = tensor
+    if value_name in graph.inputs:
+        graph.inputs[value_name] = tensor
+
+    with pytest.raises(MatmulMlirEmissionError) as exc_info:
+        emit_matmul_mlir_graph(graph)
+
+    assert str(exc_info.value) == (
+        f"matmul MLIR emission graph value {value_name!r} has unsupported dtype {dtype!r}"
+        if value_name == "extra"
+        else "matmul MLIR emission only supports f32 tensors"
+    )
+
+
+@pytest.mark.parametrize("readonly_values", [False, True])
+def test_emitter_preserves_valid_direct_graph_value_mappings(readonly_values: bool) -> None:
+    graph = parse_graph(_fixture_payload())
+    values = dict(reversed(list(graph.values.items())))
+    graph = replace(
+        graph, values=MappingProxyType(values) if readonly_values else values
+    )
+
+    assert emit_matmul_mlir_graph(graph) == EXPECTED_MLIR
+
+
+@pytest.mark.parametrize(
+    ("value_name", "shape", "message"),
+    [
+        ("lhs", (1, 2, 3), "requires rank-2 input tensors"),
+        ("rhs", (4, 4), "requires aligned matmul dimensions"),
+        ("output", (2, 5), "requires the inferred matmul result shape"),
+    ],
+)
+def test_emitter_preserves_direct_tensor_shape_errors(
+    value_name: str, shape: tuple[int, ...], message: str
+) -> None:
+    graph = parse_graph(_fixture_payload())
+    tensor = replace(graph.values[value_name], shape=shape)
+    graph.values[value_name] = tensor
+    if value_name in graph.inputs:
+        graph.inputs[value_name] = tensor
+
+    with pytest.raises(MatmulMlirEmissionError) as exc_info:
+        emit_matmul_mlir_graph(graph)
+
+    assert str(exc_info.value) == f"matmul MLIR emission {message}"
+
+
 @pytest.mark.parametrize("input_name", ["lhs", "rhs"])
 def test_emitter_rejects_direct_operand_missing_from_graph_values(input_name: str) -> None:
     graph = parse_graph(_fixture_payload())
@@ -192,7 +434,9 @@ def test_emitter_preserves_valid_direct_graph_input_mappings(
     expected = emit_matmul_mlir(payload)
     graph = parse_graph(payload)
     # Input declaration order must not change operand order or SSA argument reuse.
-    inputs = dict(reversed(list(graph.inputs.items())))
+    inputs = {
+        name: replace(tensor) for name, tensor in reversed(list(graph.inputs.items()))
+    }
     graph = replace(
         graph, inputs=MappingProxyType(inputs) if readonly_inputs else inputs
     )
@@ -221,6 +465,50 @@ def test_emitter_rejects_inconsistent_graph_input_definitions(
     graph.inputs[input_name] = replacement
     assert graph.values[input_name] == original
     assert graph.inputs[input_name] != original
+
+    with pytest.raises(MatmulMlirEmissionError) as exc_info:
+        emit_matmul_mlir_graph(graph)
+
+    assert str(exc_info.value) == (
+        f"matmul MLIR emission requires graph input {input_name!r} "
+        "to match its graph value definition"
+    )
+
+
+@pytest.mark.parametrize("input_name", ["lhs", "rhs"])
+@pytest.mark.parametrize("field", ["name", "shape", "dtype"])
+def test_emitter_rejects_incomplete_detached_graph_input_tensors(
+    input_name: str, field: str
+) -> None:
+    graph = parse_graph(_fixture_payload())
+    tensor = replace(graph.inputs[input_name])
+    object.__delattr__(tensor, field)
+    graph.inputs[input_name] = tensor
+    assert hasattr(graph.values[input_name], field)
+
+    with pytest.raises(MatmulMlirEmissionError) as exc_info:
+        emit_matmul_mlir_graph(graph)
+
+    assert str(exc_info.value) == (
+        f"matmul MLIR emission requires graph input {input_name!r} "
+        "to match its graph value definition"
+    )
+
+
+@pytest.mark.parametrize("input_name", ["lhs", "rhs"])
+@pytest.mark.parametrize("field", ["name", "shape", "dtype"])
+@pytest.mark.parametrize("error_type", [AttributeError, TypeError])
+def test_emitter_rejects_uncomparable_detached_graph_input_tensor_fields(
+    input_name: str, field: str, error_type: type[Exception]
+) -> None:
+    class InvalidField:
+        def __eq__(self, other: object) -> bool:
+            raise error_type("malformed tensor field")
+
+    graph = parse_graph(_fixture_payload())
+    graph.inputs[input_name] = replace(
+        graph.inputs[input_name], **{field: InvalidField()}
+    )
 
     with pytest.raises(MatmulMlirEmissionError) as exc_info:
         emit_matmul_mlir_graph(graph)

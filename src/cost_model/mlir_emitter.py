@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-from .models import Graph, Tensor
+from .models import DTYPE_BYTES, Graph, Operation, Tensor
 from .parser import GraphValidationError, parse_graph
 
 
@@ -19,13 +19,20 @@ def _tensor_type(tensor: Tensor) -> str:
 
 
 def _validate_matmul_graph(graph: Graph) -> tuple[Tensor, Tensor, Tensor]:
-    if len(graph.operations) != 1:
+    operations = getattr(graph, "operations", None)
+    if not isinstance(operations, (tuple, list)) or len(operations) != 1:
         raise MatmulMlirEmissionError(
             "matmul MLIR emission requires exactly one operation"
         )
 
-    operation = graph.operations[0]
-    if operation.kind != "matmul":
+    operation = operations[0]
+    if not isinstance(operation, Operation) or any(
+        not hasattr(operation, field) for field in ("kind", "inputs", "output")
+    ):
+        raise MatmulMlirEmissionError(
+            "matmul MLIR emission requires an Operation definition"
+        )
+    if not isinstance(operation.kind, str) or operation.kind != "matmul":
         raise MatmulMlirEmissionError(
             "matmul MLIR emission requires a single matmul operation"
         )
@@ -60,27 +67,67 @@ def _validate_matmul_graph(graph: Graph) -> tuple[Tensor, Tensor, Tensor]:
             "matmul MLIR emission requires the matmul result to be distinct from graph inputs"
         )
 
+    values = getattr(graph, "values", None)
+    if not isinstance(values, Mapping):
+        raise MatmulMlirEmissionError(
+            "matmul MLIR emission requires graph values to be a mapping"
+        )
     try:
-        lhs = graph.values[operation.inputs[0]]
-        rhs = graph.values[operation.inputs[1]]
-        output = graph.values[operation.output]
+        lhs = values[operation.inputs[0]]
+        rhs = values[operation.inputs[1]]
+        output = values[operation.output]
     except KeyError as exc:
         raise MatmulMlirEmissionError(
             f"matmul MLIR emission references unknown value {exc.args[0]!r}"
         ) from exc
 
+    # Check definitions before dataclass equality can dereference missing fields.
+    for value_name, tensor in values.items():
+        if not isinstance(value_name, str) or not value_name.strip():
+            raise MatmulMlirEmissionError(
+                "matmul MLIR emission requires non-empty string graph value names"
+            )
+        if not isinstance(tensor, Tensor) or any(
+            not hasattr(tensor, field) for field in ("name", "shape", "dtype")
+        ):
+            raise MatmulMlirEmissionError(
+                f"matmul MLIR emission graph value {value_name!r} "
+                "requires a Tensor definition"
+            )
+
     for input_name in operation.inputs:
-        if graph.inputs[input_name] != graph.values[input_name]:
+        tensor = graph.inputs[input_name]
+        try:
+            matches_value = (
+                isinstance(tensor, Tensor)
+                and all(hasattr(tensor, field) for field in ("name", "shape", "dtype"))
+                and bool(tensor == values[input_name])
+            )
+        except (AttributeError, TypeError):
+            matches_value = False
+        if not matches_value:
             raise MatmulMlirEmissionError(
                 f"matmul MLIR emission requires graph input {input_name!r} "
                 "to match its graph value definition"
             )
 
-    for value_name, tensor in graph.values.items():
+    for value_name, tensor in values.items():
         if value_name != tensor.name:
             raise MatmulMlirEmissionError(
                 f"matmul MLIR emission graph value {value_name!r} "
                 f"has mismatched tensor name {tensor.name!r}"
+            )
+        if not isinstance(tensor.shape, tuple):
+            raise MatmulMlirEmissionError(
+                f"matmul MLIR emission graph value {value_name!r} requires a tuple shape"
+            )
+        if any(
+            isinstance(dimension, bool) or not isinstance(dimension, int) or dimension <= 0
+            for dimension in tensor.shape
+        ):
+            raise MatmulMlirEmissionError(
+                f"matmul MLIR emission graph value {value_name!r} "
+                "requires positive integer shape dimensions"
             )
 
     if len(lhs.shape) != 2 or len(rhs.shape) != 2:
@@ -103,6 +150,12 @@ def _validate_matmul_graph(graph: Graph) -> tuple[Tensor, Tensor, Tensor]:
         raise MatmulMlirEmissionError(
             "matmul MLIR emission requires matching input and output dtypes"
         )
+    for value_name, tensor in values.items():
+        if not isinstance(tensor.dtype, str) or tensor.dtype not in DTYPE_BYTES:
+            raise MatmulMlirEmissionError(
+                f"matmul MLIR emission graph value {value_name!r} "
+                f"has unsupported dtype {tensor.dtype!r}"
+            )
     return lhs, rhs, output
 
 
