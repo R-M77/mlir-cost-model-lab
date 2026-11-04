@@ -183,6 +183,27 @@ Both `scalar` and `tiled` lowering intentionally reject batched operands with
 `LoweringValidationError`, even when those operands are valid for parsing and
 cost estimation. `compare_matmul_lowering_graph(graph)` has the same scope.
 
+For the direct `Graph` API, `Graph.operations` must be a one-element tuple or
+list containing an `Operation` with `name`, `kind`, `inputs`, and `output` fields.
+The kind must be `"matmul"`; the operation and result names must be non-empty
+strings (not whitespace-only). `Operation.inputs` must be a two-element tuple
+or list of non-empty string value names, and `Graph.outputs` must be the
+one-element tuple containing the result name. `Graph.values` must be a mapping
+from non-empty string names to complete `Tensor` definitions whose names match
+their keys, including unused values. Shapes may be tuples or lists of positive
+integers (not booleans); dtypes must be supported tensor dtypes. Operand shapes
+must be rank-2 with aligned contraction dimensions, and the result must have
+the inferred shape and shared operand dtype. Malformed containers, definitions,
+or references raise `LoweringValidationError` before incidental attribute,
+indexing, or lookup errors. Operation checks precede value lookup; unknown
+references are checked in lhs, rhs, result order before definitions are checked
+in mapping iteration order. Shape checks precede dtype checks, and graph
+validation precedes lowering-option validation. Read-only mappings, repeated
+operands, consistently named unused values (including scalars), and unused
+graph inputs remain supported without changing the report. Lowering retains
+all supported dtypes; the separate emitter's f32-only and exact-input-set
+restrictions do not apply here.
+
 Both Python APIs require positive-integer `tile_size` and `vector_width` values
 (booleans are not integers for this contract). In the default `mode="scalar"`,
 only the defaults `tile_size=16` and `vector_width=4` are accepted, whether omitted

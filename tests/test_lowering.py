@@ -4,8 +4,11 @@ import json
 import os
 import subprocess
 import sys
+from collections import UserDict
 from copy import deepcopy
+from dataclasses import replace
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 
 import pytest
@@ -16,13 +19,14 @@ from cost_model import (
     compare_matmul_lowering_graph,
     parse_graph,
 )
+from cost_model.models import DTYPE_BYTES, Graph, Tensor
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 FIXTURE_PATH = REPO_ROOT / "examples" / "matmul_lowering.json"
 
 
-def _fixture_payload() -> dict[str, object]:
+def _fixture_payload() -> dict[str, Any]:
     return json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
 
 
@@ -468,6 +472,298 @@ def test_matmul_lowering_rejects_out_of_scope_graphs(
 
     with pytest.raises(LoweringValidationError, match=message):
         compare_matmul_lowering(payload)
+
+
+def _assert_direct_lowering_error(graph: Graph, message: str) -> None:
+    for mode in ("scalar", "tiled"):
+        for _ in range(2):
+            with pytest.raises(LoweringValidationError) as exc_info:
+                compare_matmul_lowering_graph(graph, mode=mode)
+            assert str(exc_info.value) == f"matmul lowering exercise {message}"
+
+
+@pytest.mark.parametrize(
+    "operations", [None, 7, "x", {}, {0: None}, {"op"}, (), [], (None, None)]
+)
+def test_lowering_rejects_direct_operation_containers(operations: Any) -> None:
+    graph = replace(parse_graph(_fixture_payload()), operations=operations)
+    _assert_direct_lowering_error(graph, "requires exactly one operation")
+
+
+@pytest.mark.parametrize("field", ["operations", "values", "outputs"])
+def test_lowering_rejects_missing_direct_graph_fields(field: str) -> None:
+    graph = deepcopy(parse_graph(_fixture_payload()))
+    object.__delattr__(graph, field)
+    messages = {
+        "operations": "requires exactly one operation",
+        "values": "requires graph values to be a mapping",
+        "outputs": "requires the matmul result to be the only graph output",
+    }
+    _assert_direct_lowering_error(graph, messages[field])
+
+
+@pytest.mark.parametrize("definition", [None, 7, "matmul", {}, object()])
+def test_lowering_rejects_non_operation_definitions(definition: Any) -> None:
+    graph = replace(parse_graph(_fixture_payload()), operations=(definition,))
+    _assert_direct_lowering_error(graph, "requires an Operation definition")
+
+
+@pytest.mark.parametrize("field", ["name", "kind", "inputs", "output"])
+def test_lowering_rejects_incomplete_operation_definitions(field: str) -> None:
+    graph = deepcopy(parse_graph(_fixture_payload()))
+    object.__delattr__(graph.operations[0], field)
+    _assert_direct_lowering_error(graph, "requires an Operation definition")
+
+
+@pytest.mark.parametrize("kind", [None, 7, True, [], {}, "", "MATMUL", "relu"])
+def test_lowering_rejects_invalid_direct_matmul_kind(kind: Any) -> None:
+    graph = parse_graph(_fixture_payload())
+    graph = replace(graph, operations=(replace(graph.operations[0], kind=kind),))
+    _assert_direct_lowering_error(graph, "requires a single matmul operation")
+
+
+@pytest.mark.parametrize("name", [None, 7, True, [], {}, "", " \t\n"])
+def test_lowering_rejects_invalid_direct_operation_names(name: Any) -> None:
+    graph = parse_graph(_fixture_payload())
+    graph = replace(graph, operations=(replace(graph.operations[0], name=name),))
+    _assert_direct_lowering_error(graph, "requires a non-empty string operation name")
+
+
+@pytest.mark.parametrize(
+    "inputs", [None, 7, "lr", {}, {0: "lhs", 1: "rhs"}, {"lhs", "rhs"}, (), [],
+               ("lhs",), ["lhs"], ("lhs", "rhs", "lhs")]
+)
+def test_lowering_rejects_malformed_direct_operand_containers(inputs: Any) -> None:
+    graph = parse_graph(_fixture_payload())
+    graph = replace(graph, operations=(replace(graph.operations[0], inputs=inputs),))
+    _assert_direct_lowering_error(graph, "requires exactly two matmul inputs")
+
+
+@pytest.mark.parametrize("operand_index", [0, 1])
+@pytest.mark.parametrize("name", ["", " \t\n", None, 7, True, ("lhs",), ["lhs"], {}])
+def test_lowering_rejects_invalid_direct_operand_names(name: Any, operand_index: int) -> None:
+    graph = parse_graph(_fixture_payload())
+    inputs = list(graph.operations[0].inputs)
+    inputs[operand_index] = name
+    graph = replace(graph, operations=(replace(graph.operations[0], inputs=tuple(inputs)),))
+    _assert_direct_lowering_error(graph, "requires non-empty string matmul input names")
+
+
+@pytest.mark.parametrize("name", ["", " \t\n", None, 7, True, ("output",), ["output"], {}])
+def test_lowering_rejects_invalid_direct_result_names(name: Any) -> None:
+    graph = parse_graph(_fixture_payload())
+    graph = replace(
+        graph, operations=(replace(graph.operations[0], output=name),), outputs=(name,)
+    )
+    _assert_direct_lowering_error(graph, "requires a non-empty string matmul result name")
+
+
+@pytest.mark.parametrize(
+    "outputs", [(), ("output", "output"), ("output", "lhs"), ("lhs",),
+                ["output"], "output", None, 7, (["output"],)]
+)
+def test_lowering_preserves_direct_graph_output_errors(outputs: Any) -> None:
+    graph = replace(parse_graph(_fixture_payload()), outputs=outputs)
+    _assert_direct_lowering_error(
+        graph, "requires the matmul result to be the only graph output"
+    )
+
+
+@pytest.mark.parametrize("values", [None, 7, "values", [], (), {"lhs", "rhs"}])
+def test_lowering_rejects_direct_value_containers(values: Any) -> None:
+    graph = replace(parse_graph(_fixture_payload()), values=values)
+    _assert_direct_lowering_error(graph, "requires graph values to be a mapping")
+
+
+@pytest.mark.parametrize("value_name", ["lhs", "rhs", "output"])
+def test_lowering_rejects_unknown_direct_value_references(value_name: str) -> None:
+    graph = parse_graph(_fixture_payload())
+    del graph.values[value_name]
+    _assert_direct_lowering_error(graph, f"references unknown value {value_name!r}")
+
+
+@pytest.mark.parametrize("value_name", ["", " \t\n", None, 7, True, ("extra",)])
+def test_lowering_rejects_invalid_direct_value_keys(value_name: Any) -> None:
+    graph = parse_graph(_fixture_payload())
+    graph.values[value_name] = Tensor(value_name, (), "i32")
+    _assert_direct_lowering_error(graph, "requires non-empty string graph value names")
+
+
+@pytest.mark.parametrize("value_name", ["lhs", "rhs", "output", "extra"])
+@pytest.mark.parametrize("definition", [None, 7, "tensor", {}, [2, 3], object()])
+def test_lowering_rejects_non_tensor_value_definitions(value_name: str, definition: Any) -> None:
+    graph = parse_graph(_fixture_payload())
+    graph.values[value_name] = definition
+    _assert_direct_lowering_error(graph, f"graph value {value_name!r} requires a Tensor definition")
+
+
+@pytest.mark.parametrize("value_name", ["lhs", "rhs", "output", "extra"])
+@pytest.mark.parametrize("field", ["name", "shape", "dtype"])
+def test_lowering_rejects_incomplete_tensor_definitions(value_name: str, field: str) -> None:
+    graph = deepcopy(parse_graph(_fixture_payload()))
+    if value_name == "extra":
+        graph.values[value_name] = Tensor(value_name, (), "i32")
+    object.__delattr__(graph.values[value_name], field)
+    _assert_direct_lowering_error(graph, f"graph value {value_name!r} requires a Tensor definition")
+
+
+@pytest.mark.parametrize("value_name", ["lhs", "rhs", "output", "extra"])
+@pytest.mark.parametrize("name", ["stale", "", None, [], {}])
+def test_lowering_rejects_value_key_tensor_name_mismatches(value_name: str, name: Any) -> None:
+    graph = parse_graph(_fixture_payload())
+    graph.values[value_name] = Tensor(name, (2, 3), "f32")
+    _assert_direct_lowering_error(
+        graph, f"graph value {value_name!r} has mismatched tensor name {name!r}"
+    )
+
+
+@pytest.mark.parametrize("value_name", ["lhs", "rhs", "output", "extra"])
+@pytest.mark.parametrize("shape", [None, 7, "2x3", {"shape": [2, 3]}, {2, 3}])
+def test_lowering_rejects_malformed_direct_tensor_shapes(value_name: str, shape: Any) -> None:
+    graph = parse_graph(_fixture_payload())
+    graph.values[value_name] = Tensor(value_name, shape, "f32")
+    _assert_direct_lowering_error(
+        graph, f"graph value {value_name!r} requires a tuple or list shape"
+    )
+
+
+@pytest.mark.parametrize("value_name", ["lhs", "rhs", "output", "extra"])
+@pytest.mark.parametrize("dimension", [0, -1, True, False, 2.0, "2", None, [2], {}])
+def test_lowering_rejects_malformed_direct_tensor_dimensions(
+    value_name: str, dimension: Any
+) -> None:
+    graph = parse_graph(_fixture_payload())
+    graph.values[value_name] = Tensor(value_name, (dimension, 3), "f32")
+    _assert_direct_lowering_error(
+        graph, f"graph value {value_name!r} requires positive integer shape dimensions"
+    )
+
+
+@pytest.mark.parametrize("value_name", ["lhs", "rhs", "output", "extra"])
+@pytest.mark.parametrize("dtype", [None, 7, True, [], {}, "", "unknown"])
+def test_lowering_rejects_malformed_direct_tensor_dtypes(value_name: str, dtype: Any) -> None:
+    graph = parse_graph(_fixture_payload())
+    original = graph.values.get(value_name, Tensor(value_name, (), "i32"))
+    graph.values[value_name] = replace(original, dtype=dtype)
+    _assert_direct_lowering_error(
+        graph, f"graph value {value_name!r} has unsupported dtype {dtype!r}"
+    )
+
+
+@pytest.mark.parametrize(
+    ("value_name", "shape", "message"),
+    [
+        ("lhs", (), "requires rank-2 input tensors"),
+        ("rhs", (3,), "requires rank-2 input tensors"),
+        ("lhs", (1, 2, 3), "requires rank-2 input tensors"),
+        ("rhs", (1, 3, 4), "requires rank-2 input tensors"),
+        ("rhs", (4, 4), "requires aligned matmul dimensions"),
+        ("output", (), "requires the inferred matmul result shape"),
+        ("output", (2, 5), "requires the inferred matmul result shape"),
+        ("output", (1, 2, 4), "requires the inferred matmul result shape"),
+    ],
+)
+def test_lowering_validates_direct_matmul_shapes(
+    value_name: str, shape: tuple[int, ...], message: str
+) -> None:
+    graph = parse_graph(_fixture_payload())
+    graph.values[value_name] = replace(graph.values[value_name], shape=shape)
+    _assert_direct_lowering_error(graph, message)
+
+
+@pytest.mark.parametrize("value_name", ["lhs", "rhs", "output"])
+def test_lowering_rejects_inconsistent_supported_dtypes(value_name: str) -> None:
+    graph = parse_graph(_fixture_payload())
+    graph.values[value_name] = replace(graph.values[value_name], dtype="f16")
+    _assert_direct_lowering_error(graph, "requires matching input and output dtypes")
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        (lambda g: replace(g, operations=(None, None), values=None),
+         "requires exactly one operation"),
+        (lambda g: replace(g, operations=(replace(g.operations[0], kind="relu", inputs=None),)),
+         "requires a single matmul operation"),
+        (lambda g: replace(g, operations=(replace(g.operations[0], output=[]),), outputs=()),
+         "requires a non-empty string matmul result name"),
+        (lambda g: replace(g, outputs=(), values=None),
+         "requires the matmul result to be the only graph output"),
+        (lambda g: replace(g, operations=(replace(g.operations[0], inputs=None),), values=None),
+         "requires exactly two matmul inputs"),
+        (lambda g: replace(g, values={}), "references unknown value 'lhs'"),
+        (lambda g: replace(g, values={"lhs": None}), "references unknown value 'rhs'"),
+        (lambda g: replace(g, values={"lhs": None, "rhs": None}),
+         "references unknown value 'output'"),
+        (lambda g: replace(g, values={"lhs": None, "rhs": None, "output": None}),
+         "graph value 'lhs' requires a Tensor definition"),
+        (lambda g: replace(g, values={
+            **g.values, "lhs": replace(g.values["lhs"], shape=(1, 2, 3), dtype=[])
+        }),
+         "requires rank-2 input tensors"),
+    ],
+)
+def test_lowering_direct_validation_precedence(mutation: Any, message: str) -> None:
+    graph = mutation(parse_graph(_fixture_payload()))
+    _assert_direct_lowering_error(graph, message)
+    # Graph diagnostics must also precede unrelated lowering-option validation.
+    with pytest.raises(LoweringValidationError) as exc_info:
+        compare_matmul_lowering_graph(graph, mode="invalid", tile_size=0)
+    assert str(exc_info.value) == f"matmul lowering exercise {message}"
+
+
+@pytest.mark.parametrize("mode", ["scalar", "tiled"])
+@pytest.mark.parametrize("container", [tuple, list])
+@pytest.mark.parametrize("mapping", [dict, MappingProxyType, UserDict])
+@pytest.mark.parametrize("repeated_operand", [False, True])
+def test_lowering_preserves_valid_direct_containers(
+    mode: str, container: Any, mapping: Any, repeated_operand: bool
+) -> None:
+    payload = _fixture_payload()
+    if repeated_operand:
+        payload["inputs"] = {"lhs": {"shape": [2, 2], "dtype": "f32"}}
+        payload["ops"][0]["inputs"] = ["lhs", "lhs"]
+    # Lowering, unlike textual emission, permits unused graph inputs.
+    payload["inputs"]["unused"] = {"shape": [], "dtype": "i32"}
+    expected = compare_matmul_lowering(payload, mode=mode)
+    graph = parse_graph(payload)
+    graph.values["extra"] = Tensor("extra", (), "bool")
+    graph = replace(
+        graph,
+        operations=container([replace(graph.operations[0], inputs=container(graph.operations[0].inputs))]),
+        inputs=mapping(dict(reversed(list(graph.inputs.items())))),
+        values=mapping({
+            name: replace(tensor, shape=container(tensor.shape))
+            for name, tensor in reversed(list(graph.values.items()))
+        }),
+    )
+    assert compare_matmul_lowering_graph(graph, mode=mode) == expected
+    assert compare_matmul_lowering_graph(graph, mode=mode) == expected
+
+
+@pytest.mark.parametrize("mode", ["scalar", "tiled"])
+@pytest.mark.parametrize("dtype", sorted(DTYPE_BYTES))
+def test_lowering_preserves_all_supported_matmul_dtypes(mode: str, dtype: str) -> None:
+    payload = _fixture_payload()
+    for spec in payload["inputs"].values():
+        spec["dtype"] = dtype
+    graph = parse_graph(payload)
+    original = deepcopy(graph)
+    report = compare_matmul_lowering_graph(graph, mode=mode)
+    assert graph == original
+    assert report == compare_matmul_lowering(payload, mode=mode)
+    assert report["before"]["totals"]["flops"] == report["after"]["totals"]["flops"] == 48
+    assert report["after"]["ops"][0]["dtype"] == dtype
+
+
+@pytest.mark.parametrize("name", ["renamed", " label % ! \n"])
+def test_lowering_preserves_direct_labels_and_result_names(name: str) -> None:
+    payload = _fixture_payload()
+    payload["name"] = payload["ops"][0]["name"] = name
+    payload["ops"][0]["outputs"] = payload["outputs"] = [name]
+    graph = parse_graph(payload)
+    assert compare_matmul_lowering_graph(graph) == compare_matmul_lowering(payload)
+    assert compare_matmul_lowering_graph(graph)["after"]["representation"]["source_operation"] == name
 
 
 def test_lowering_cli_is_opt_in_and_deterministic() -> None:

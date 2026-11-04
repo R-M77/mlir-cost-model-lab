@@ -17,7 +17,7 @@ from .parser import GraphValidationError, parse_graph
 
 
 class LoweringValidationError(GraphValidationError):
-    """Raised when a graph is valid but outside the matmul exercise scope."""
+    """Raised for malformed direct graphs or graphs outside the lowering scope."""
 
 
 _LOWERING_KIND = "scalar_reduction"
@@ -54,28 +54,112 @@ def _lowered_roofline_metrics(
 
 
 def _validate_matmul_exercise(graph: Graph) -> tuple[Operation, Tensor, Tensor, Tensor]:
-    if len(graph.operations) != 1:
+    operations = getattr(graph, "operations", None)
+    if not isinstance(operations, (tuple, list)) or len(operations) != 1:
         raise LoweringValidationError(
             "matmul lowering exercise requires exactly one operation"
         )
 
-    operation = graph.operations[0]
-    if operation.kind != "matmul":
+    operation = operations[0]
+    if not isinstance(operation, Operation) or any(
+        not hasattr(operation, field) for field in ("name", "kind", "inputs", "output")
+    ):
+        raise LoweringValidationError(
+            "matmul lowering exercise requires an Operation definition"
+        )
+    if not isinstance(operation.kind, str) or operation.kind != "matmul":
         raise LoweringValidationError(
             "matmul lowering exercise requires a single matmul operation"
         )
-
-    if graph.outputs != (operation.output,):
+    if not isinstance(operation.name, str) or not operation.name.strip():
+        raise LoweringValidationError(
+            "matmul lowering exercise requires a non-empty string operation name"
+        )
+    if not isinstance(operation.output, str) or not operation.output.strip():
+        raise LoweringValidationError(
+            "matmul lowering exercise requires a non-empty string matmul result name"
+        )
+    if getattr(graph, "outputs", None) != (operation.output,):
         raise LoweringValidationError(
             "matmul lowering exercise requires the matmul result to be the only graph output"
         )
+    if not isinstance(operation.inputs, (tuple, list)) or len(operation.inputs) != 2:
+        raise LoweringValidationError(
+            "matmul lowering exercise requires exactly two matmul inputs"
+        )
+    if any(not isinstance(name, str) or not name.strip() for name in operation.inputs):
+        raise LoweringValidationError(
+            "matmul lowering exercise requires non-empty string matmul input names"
+        )
 
-    lhs = graph.values[operation.inputs[0]]
-    rhs = graph.values[operation.inputs[1]]
-    output = graph.values[operation.output]
+    values = getattr(graph, "values", None)
+    if not isinstance(values, Mapping):
+        raise LoweringValidationError(
+            "matmul lowering exercise requires graph values to be a mapping"
+        )
+    try:
+        lhs = values[operation.inputs[0]]
+        rhs = values[operation.inputs[1]]
+        output = values[operation.output]
+    except KeyError as exc:
+        raise LoweringValidationError(
+            f"matmul lowering exercise references unknown value {exc.args[0]!r}"
+        ) from exc
+
+    # Validate definitions before shape arithmetic or estimator byte accounting.
+    # Keep tuple/list support for direct graphs; do not normalize or mutate them.
+    for value_name, tensor in values.items():
+        if not isinstance(value_name, str) or not value_name.strip():
+            raise LoweringValidationError(
+                "matmul lowering exercise requires non-empty string graph value names"
+            )
+        if not isinstance(tensor, Tensor) or any(
+            not hasattr(tensor, field) for field in ("name", "shape", "dtype")
+        ):
+            raise LoweringValidationError(
+                f"matmul lowering exercise graph value {value_name!r} "
+                "requires a Tensor definition"
+            )
+        if not isinstance(tensor.name, str) or value_name != tensor.name:
+            raise LoweringValidationError(
+                f"matmul lowering exercise graph value {value_name!r} "
+                f"has mismatched tensor name {tensor.name!r}"
+            )
+        if not isinstance(tensor.shape, (tuple, list)):
+            raise LoweringValidationError(
+                f"matmul lowering exercise graph value {value_name!r} "
+                "requires a tuple or list shape"
+            )
+        if any(
+            isinstance(dimension, bool) or not isinstance(dimension, int) or dimension <= 0
+            for dimension in tensor.shape
+        ):
+            raise LoweringValidationError(
+                f"matmul lowering exercise graph value {value_name!r} "
+                "requires positive integer shape dimensions"
+            )
+
     if len(lhs.shape) != 2 or len(rhs.shape) != 2:
         raise LoweringValidationError(
             "matmul lowering exercise requires rank-2 input tensors"
+        )
+    if lhs.shape[1] != rhs.shape[0]:
+        raise LoweringValidationError(
+            "matmul lowering exercise requires aligned matmul dimensions"
+        )
+    if tuple(output.shape) != (lhs.shape[0], rhs.shape[1]):
+        raise LoweringValidationError(
+            "matmul lowering exercise requires the inferred matmul result shape"
+        )
+    for value_name, tensor in values.items():
+        if not isinstance(tensor.dtype, str) or tensor.dtype not in DTYPE_BYTES:
+            raise LoweringValidationError(
+                f"matmul lowering exercise graph value {value_name!r} "
+                f"has unsupported dtype {tensor.dtype!r}"
+            )
+    if lhs.dtype != rhs.dtype or output.dtype != lhs.dtype:
+        raise LoweringValidationError(
+            "matmul lowering exercise requires matching input and output dtypes"
         )
     return operation, lhs, rhs, output
 
