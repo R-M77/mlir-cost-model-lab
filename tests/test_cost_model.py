@@ -6,12 +6,20 @@ import subprocess
 import sys
 from collections import UserDict
 from copy import deepcopy
+from dataclasses import replace
 from pathlib import Path
 from types import MappingProxyType
 
 import pytest
 
-from cost_model import GraphValidationError, analyze_graph, load_graph, parse_graph
+from cost_model import (
+    GraphValidationError,
+    Target,
+    analyze_graph,
+    estimate_graph,
+    load_graph,
+    parse_graph,
+)
 
 
 EXAMPLE_GRAPH = {
@@ -1133,6 +1141,88 @@ def test_oversized_integer_target_returns_validation_and_cli_errors(
     assert result.returncode == 2
     assert result.stdout == ""
     assert result.stderr == f"error: {message}\n"
+
+
+def test_direct_estimate_graph_rejects_mapping_target() -> None:
+    graph = replace(
+        parse_graph(EXAMPLE_GRAPH),
+        target={"peak_compute_gflops": 100.0, "memory_bandwidth_gbps": 100.0},
+    )
+
+    with pytest.raises(GraphValidationError) as error:
+        estimate_graph(graph)
+
+    assert str(error.value) == "graph target must be a Target definition or None"
+
+
+@pytest.mark.parametrize("field", ["peak_compute_gflops", "memory_bandwidth_gbps"])
+def test_direct_estimate_graph_rejects_incomplete_target(field: str) -> None:
+    target = Target(100.0, 100.0)
+    object.__delattr__(target, field)
+    graph = replace(parse_graph(EXAMPLE_GRAPH), target=target)
+
+    with pytest.raises(GraphValidationError) as error:
+        estimate_graph(graph)
+
+    assert str(error.value) == f"target.{field} must be a positive finite number"
+
+
+@pytest.mark.parametrize(
+    ("target", "field"),
+    [
+        (Target(100.0, 0), "memory_bandwidth_gbps"),
+        (Target(True, 100.0), "peak_compute_gflops"),
+        (Target("100", 100.0), "peak_compute_gflops"),  # type: ignore[arg-type]
+        (Target(float("nan"), 100.0), "peak_compute_gflops"),
+        (Target(100.0, float("inf")), "memory_bandwidth_gbps"),
+        pytest.param(Target(10**1000, 100.0), "peak_compute_gflops", id="oversized-integer"),
+    ],
+)
+def test_direct_estimate_graph_rejects_invalid_target_rates(
+    target: Target, field: str
+) -> None:
+    graph = replace(parse_graph(EXAMPLE_GRAPH), target=target)
+
+    with pytest.raises(GraphValidationError) as error:
+        estimate_graph(graph)
+
+    assert str(error.value) == f"target.{field} must be a positive finite number"
+
+
+@pytest.mark.parametrize("field", ["peak_compute_gflops", "memory_bandwidth_gbps"])
+def test_direct_estimate_graph_rejects_scaled_integer_target_overflow(field: str) -> None:
+    target = replace(Target(100, 100), **{field: 10**308})
+    graph = replace(parse_graph(EXAMPLE_GRAPH), target=target)
+
+    with pytest.raises(GraphValidationError) as error:
+        estimate_graph(graph)
+
+    assert str(error.value) == "roofline arithmetic exceeds finite floating-point range"
+
+
+def test_direct_estimate_graph_checks_target_before_operations() -> None:
+    graph = replace(parse_graph(EXAMPLE_GRAPH), target=Target(0, 0), operations=(None,))
+
+    with pytest.raises(GraphValidationError) as error:
+        estimate_graph(graph)
+
+    assert str(error.value) == "target.peak_compute_gflops must be a positive finite number"
+
+
+@pytest.mark.parametrize("target", [None, Target(100, 100), Target(100.0, 100.0)])
+def test_direct_estimate_graph_preserves_valid_target_report(target: Target | None) -> None:
+    graph = replace(parse_graph(EXAMPLE_GRAPH), target=target)
+    original = deepcopy(graph)
+    payload = deepcopy(EXAMPLE_GRAPH)
+    if target is not None:
+        payload["target"] = {
+            "peak_compute_gflops": target.peak_compute_gflops,
+            "memory_bandwidth_gbps": target.memory_bandwidth_gbps,
+        }
+
+    assert estimate_graph(graph) == analyze_graph(payload)
+    assert graph == original
+    assert graph.target is target
 
 
 def test_graph_without_target_has_explicit_null_roofline_analysis() -> None:

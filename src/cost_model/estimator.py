@@ -8,7 +8,7 @@ from math import isfinite
 from typing import Any
 
 from .models import Graph, Operation, Target
-from .parser import GraphValidationError, parse_graph
+from .parser import GraphValidationError, _parse_target_number, parse_graph
 
 ELEMENTWISE_OPS = frozenset({"add", "mul", "relu"})
 
@@ -44,14 +44,15 @@ def _roofline_metrics(
         memory_rate = target.memory_bandwidth_gbps * 1_000
         compute_time_us = flops / compute_rate
         memory_time_us = logical_bytes / memory_rate
+        # Check both times before max(), and rates before overflow can hide as zero time.
+        # Direct Target integer rates can also overflow inside isfinite().
+        if not all(
+            isfinite(value)
+            for value in (ridge_point, compute_rate, memory_rate, compute_time_us, memory_time_us)
+        ):
+            raise GraphValidationError(message)
     except OverflowError as exc:
         raise GraphValidationError(message) from exc
-    # Check both times before max(), and rates before overflow can hide as zero time.
-    if not all(
-        isfinite(value)
-        for value in (ridge_point, compute_rate, memory_rate, compute_time_us, memory_time_us)
-    ):
-        raise GraphValidationError(message)
     return {
         "arithmetic_intensity": arithmetic_intensity,
         "ridge_point": ridge_point,
@@ -146,8 +147,19 @@ def _fusion_report(graph: Graph) -> dict[str, Any]:
     return {"count": len(candidates), "candidates": candidates}
 
 
+def _validate_estimation_target(target: Target | None) -> None:
+    """Check direct Graph targets without normalizing or mutating their rates."""
+    if target is None:
+        return
+    if not isinstance(target, Target):
+        raise GraphValidationError("graph target must be a Target definition or None")
+    for field in ("peak_compute_gflops", "memory_bandwidth_gbps"):
+        _parse_target_number(getattr(target, field, None), f"target.{field}")
+
+
 def estimate_graph(graph: Graph) -> dict[str, Any]:
-    """Estimate every operation in a validated graph."""
+    """Estimate a shape-inferred graph, validating its target before costing."""
+    _validate_estimation_target(graph.target)
     operations = _estimate_operations(graph)
     total_flops = sum(item["flops"] for item in operations)
     total_bytes_read = sum(item["bytes_read"] for item in operations)

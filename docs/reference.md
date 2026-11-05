@@ -420,6 +420,26 @@ logical read accounting. See the formulas below and the implementations in
 [`parser.py`](../src/cost_model/parser.py) and
 [`estimator.py`](../src/cost_model/estimator.py).
 
+## Direct graph estimation
+
+`estimate_graph(graph)` accepts a shape-inferred `Graph`, normally returned by
+`parse_graph` or `load_graph`. Before estimating any operation or reporting
+fusion, it checks `Graph.target`: only `None` or a `Target` definition is
+accepted, not the target mapping used by the JSON input schema. Other types
+raise `GraphValidationError("graph target must be a Target definition or None")`.
+
+Both target fields must be present and must satisfy the parser's positive,
+finite numeric-rate rules (including rejection of booleans). Validation checks
+`peak_compute_gflops` before `memory_bandwidth_gbps`; missing or invalid fields
+raise `GraphValidationError("target.FIELD must be a positive finite number")`.
+Target errors take precedence over operation costing errors. Target validation
+does not mutate the graph or normalize its stored rates: valid integer rates,
+float rates, and `None` keep their existing reports. Finite integer rates whose
+scaled roofline arithmetic exceeds floating-point range raise the existing
+`roofline arithmetic exceeds finite floating-point range` validation error.
+Other direct graph fields must still satisfy the parsed graph invariants; this
+target check is not a general revalidation of operation or tensor mutations.
+
 ## Cost definitions
 
 - **Matmul FLOPs:** `2 × B × M × K × N` (equivalently `2 × output.elements × K`), counting one multiply and one add per output reduction term. B is the product of the broadcasted batch dimensions, or 1 for rank-2 matmul.
