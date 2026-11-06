@@ -437,8 +437,13 @@ does not mutate the graph or normalize its stored rates: valid integer rates,
 float rates, and `None` keep their existing reports. Finite integer rates whose
 scaled roofline arithmetic exceeds floating-point range raise the existing
 `roofline arithmetic exceeds finite floating-point range` validation error.
-Other direct graph fields must still satisfy the parsed graph invariants; this
-target check is not a general revalidation of operation or tensor mutations.
+
+Operation kinds must belong to the parser's supported-operation set. Unsupported
+kinds raise `GraphValidationError` with `ops[INDEX] unsupported operation 'KIND';
+use one of ...` and an alphabetically sorted list of supported kinds, rather than
+receiving elementwise costs. Target validation still runs first. Other direct
+graph fields must satisfy the parsed graph invariants; these checks are not a
+general revalidation of operation or tensor mutations.
 
 ## Cost definitions
 

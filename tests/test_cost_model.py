@@ -1143,6 +1143,22 @@ def test_oversized_integer_target_returns_validation_and_cli_errors(
     assert result.stderr == f"error: {message}\n"
 
 
+def test_direct_estimate_graph_rejects_unsupported_operation_kind() -> None:
+    graph = parse_graph(EXAMPLE_GRAPH)
+    graph = replace(
+        graph,
+        operations=(replace(graph.operations[0], kind="mystery"), *graph.operations[1:]),
+    )
+
+    with pytest.raises(GraphValidationError) as error:
+        estimate_graph(graph)
+
+    assert str(error.value) == (
+        "ops[0] unsupported operation 'mystery'; use one of "
+        "add, layer_norm, matmul, mul, reduce_sum, relu, softmax"
+    )
+
+
 def test_direct_estimate_graph_rejects_mapping_target() -> None:
     graph = replace(
         parse_graph(EXAMPLE_GRAPH),

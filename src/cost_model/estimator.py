@@ -8,7 +8,7 @@ from math import isfinite
 from typing import Any
 
 from .models import Graph, Operation, Target
-from .parser import GraphValidationError, _parse_target_number, parse_graph
+from .parser import SUPPORTED_OPS, GraphValidationError, _parse_target_number, parse_graph
 
 ELEMENTWISE_OPS = frozenset({"add", "mul", "relu"})
 
@@ -96,7 +96,12 @@ def _op_flops(operation: Operation, graph: Graph) -> int:
 
 def _estimate_operations(graph: Graph) -> list[dict[str, Any]]:
     reports: list[dict[str, Any]] = []
-    for operation in graph.operations:
+    for index, operation in enumerate(graph.operations):
+        if not isinstance(operation.kind, str) or operation.kind not in SUPPORTED_OPS:
+            supported = ", ".join(sorted(SUPPORTED_OPS))
+            raise GraphValidationError(
+                f"ops[{index}] unsupported operation {operation.kind!r}; use one of {supported}"
+            )
         output = graph.values[operation.output]
         bytes_read = sum(graph.values[name].nbytes for name in operation.inputs)
         bytes_written = output.nbytes
