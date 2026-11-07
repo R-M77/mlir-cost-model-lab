@@ -441,9 +441,14 @@ scaled roofline arithmetic exceeds floating-point range raise the existing
 Operation kinds must belong to the parser's supported-operation set. Unsupported
 kinds raise `GraphValidationError` with `ops[INDEX] unsupported operation 'KIND';
 use one of ...` and an alphabetically sorted list of supported kinds, rather than
-receiving elementwise costs. Target validation still runs first. Other direct
-graph fields must satisfy the parsed graph invariants; these checks are not a
-general revalidation of operation or tensor mutations.
+receiving elementwise costs. Target validation still runs first.
+
+Before costing each operation, its output and then its inputs (in operand order)
+must have entries in `Graph.values`. A missing entry raises `GraphValidationError`
+with `ops[INDEX] references missing value definition 'NAME'` instead of `KeyError`.
+Operation-kind validation precedes these lookups. Other direct graph fields must
+satisfy the parsed graph invariants; these checks are not a general revalidation
+of operation or tensor mutations.
 
 ## Cost definitions
 

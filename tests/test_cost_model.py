@@ -1159,6 +1159,16 @@ def test_direct_estimate_graph_rejects_unsupported_operation_kind() -> None:
     )
 
 
+def test_direct_estimate_graph_rejects_missing_operation_value_definition() -> None:
+    graph = parse_graph(EXAMPLE_GRAPH)
+    del graph.values[graph.operations[0].output]
+
+    with pytest.raises(GraphValidationError) as error:
+        estimate_graph(graph)
+
+    assert str(error.value) == "ops[0] references missing value definition 'product'"
+
+
 def test_direct_estimate_graph_rejects_mapping_target() -> None:
     graph = replace(
         parse_graph(EXAMPLE_GRAPH),

@@ -102,6 +102,11 @@ def _estimate_operations(graph: Graph) -> list[dict[str, Any]]:
             raise GraphValidationError(
                 f"ops[{index}] unsupported operation {operation.kind!r}; use one of {supported}"
             )
+        for name in (operation.output, *operation.inputs):
+            if name not in graph.values:
+                raise GraphValidationError(
+                    f"ops[{index}] references missing value definition {name!r}"
+                )
         output = graph.values[operation.output]
         bytes_read = sum(graph.values[name].nbytes for name in operation.inputs)
         bytes_written = output.nbytes
