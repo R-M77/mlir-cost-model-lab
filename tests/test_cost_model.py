@@ -8,13 +8,14 @@ from collections import UserDict
 from copy import deepcopy
 from dataclasses import replace
 from pathlib import Path
-from types import MappingProxyType
+from types import MappingProxyType, SimpleNamespace
 
 import pytest
 
 from cost_model import (
     GraphValidationError,
     Target,
+    Tensor,
     analyze_graph,
     estimate_graph,
     load_graph,
@@ -1167,6 +1168,118 @@ def test_direct_estimate_graph_rejects_missing_operation_value_definition() -> N
         estimate_graph(graph)
 
     assert str(error.value) == "ops[0] references missing value definition 'product'"
+
+
+def test_direct_estimate_graph_rejects_none_output_definition() -> None:
+    graph = parse_graph(EXAMPLE_GRAPH)
+    graph.values["product"] = None  # type: ignore[assignment]
+
+    with pytest.raises(GraphValidationError) as error:
+        estimate_graph(graph)
+
+    assert str(error.value) == "ops[0] value definition 'product' must be a Tensor"
+
+
+@pytest.mark.parametrize(
+    ("name", "definition", "index"),
+    [
+        ("lhs", None, 0),
+        pytest.param(
+            "rhs",
+            SimpleNamespace(name="rhs", shape=(3, 4), dtype="f32", elements=12, nbytes=48),
+            0,
+            id="duck-typed-input",
+        ),
+        ("output", {}, 2),
+    ],
+)
+def test_direct_estimate_graph_rejects_non_tensor_definition(
+    name: str, definition: object, index: int
+) -> None:
+    graph = parse_graph(EXAMPLE_GRAPH)
+    graph.values[name] = definition  # type: ignore[assignment]
+    original = dict(graph.values)
+
+    for _ in range(2):
+        with pytest.raises(GraphValidationError) as error:
+            estimate_graph(graph)
+        assert str(error.value) == f"ops[{index}] value definition {name!r} must be a Tensor"
+    assert graph.values == original
+
+
+@pytest.mark.parametrize(
+    ("invalid_names", "first"),
+    [(("rhs", "lhs", "product"), "product"), (("rhs", "lhs"), "lhs")],
+)
+def test_direct_estimate_graph_checks_definitions_in_reference_order(
+    invalid_names: tuple[str, ...], first: str
+) -> None:
+    graph = parse_graph(EXAMPLE_GRAPH)
+    for name in invalid_names:
+        graph.values[name] = None  # type: ignore[assignment]
+
+    with pytest.raises(GraphValidationError) as error:
+        estimate_graph(graph)
+
+    assert str(error.value) == f"ops[0] value definition {first!r} must be a Tensor"
+
+
+@pytest.mark.parametrize("earlier_error", ["target", "kind", "missing-output", "missing-input"])
+def test_direct_estimate_graph_preserves_precedence_over_definition_types(
+    earlier_error: str,
+) -> None:
+    graph = parse_graph(EXAMPLE_GRAPH)
+    graph.values["lhs"] = None  # type: ignore[assignment]
+    if earlier_error in {"target", "kind"}:
+        graph = replace(
+            graph,
+            operations=(replace(graph.operations[0], kind="mystery"), *graph.operations[1:]),
+        )
+        del graph.values["product"]
+        message = (
+            "ops[0] unsupported operation 'mystery'; use one of "
+            "add, layer_norm, matmul, mul, reduce_sum, relu, softmax"
+        )
+        if earlier_error == "target":
+            graph = replace(graph, target=Target(0, 0))
+            message = "target.peak_compute_gflops must be a positive finite number"
+    else:
+        missing = "product" if earlier_error == "missing-output" else "rhs"
+        del graph.values[missing]
+        message = f"ops[0] references missing value definition {missing!r}"
+
+    with pytest.raises(GraphValidationError) as error:
+        estimate_graph(graph)
+
+    assert str(error.value) == message
+
+
+@pytest.mark.parametrize("repeated_operands", [False, True])
+def test_direct_estimate_graph_preserves_tensor_subclasses_and_read_only_values(
+    repeated_operands: bool,
+) -> None:
+    class SpecializedTensor(Tensor):
+        pass
+
+    payload = deepcopy(SOFTMAX_GRAPH if repeated_operands else EXAMPLE_GRAPH)
+    if repeated_operands:
+        payload["ops"][0].update(op="mul", inputs=["source", "source"])
+    graph = parse_graph(payload)
+    values = {
+        name: SpecializedTensor(tensor.name, tensor.shape, tensor.dtype)
+        for name, tensor in graph.values.items()
+    }
+    values["unused"] = None  # type: ignore[assignment]
+    original = dict(values)
+    read_only_values = MappingProxyType(values)
+    graph = replace(graph, values=read_only_values)  # type: ignore[arg-type]
+    original_inputs = deepcopy(graph.inputs)
+
+    assert estimate_graph(graph) == analyze_graph(payload)
+    assert graph.values is read_only_values
+    assert values == original
+    assert all(values[name] is tensor for name, tensor in original.items())
+    assert graph.inputs == original_inputs
 
 
 def test_direct_estimate_graph_rejects_mapping_target() -> None:

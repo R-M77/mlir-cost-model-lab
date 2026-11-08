@@ -7,7 +7,7 @@ from collections.abc import Mapping
 from math import isfinite
 from typing import Any
 
-from .models import Graph, Operation, Target
+from .models import Graph, Operation, Target, Tensor
 from .parser import SUPPORTED_OPS, GraphValidationError, _parse_target_number, parse_graph
 
 ELEMENTWISE_OPS = frozenset({"add", "mul", "relu"})
@@ -106,6 +106,11 @@ def _estimate_operations(graph: Graph) -> list[dict[str, Any]]:
             if name not in graph.values:
                 raise GraphValidationError(
                     f"ops[{index}] references missing value definition {name!r}"
+                )
+        for name in (operation.output, *operation.inputs):
+            if not isinstance(graph.values[name], Tensor):
+                raise GraphValidationError(
+                    f"ops[{index}] value definition {name!r} must be a Tensor"
                 )
         output = graph.values[operation.output]
         bytes_read = sum(graph.values[name].nbytes for name in operation.inputs)

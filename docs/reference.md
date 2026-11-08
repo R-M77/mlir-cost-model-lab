@@ -446,9 +446,19 @@ receiving elementwise costs. Target validation still runs first.
 Before costing each operation, its output and then its inputs (in operand order)
 must have entries in `Graph.values`. A missing entry raises `GraphValidationError`
 with `ops[INDEX] references missing value definition 'NAME'` instead of `KeyError`.
-Operation-kind validation precedes these lookups. Other direct graph fields must
-satisfy the parsed graph invariants; these checks are not a general revalidation
-of operation or tensor mutations.
+Operation-kind validation precedes these lookups. After all references for that
+operation are found, each referenced definition must be a `Tensor` instance
+(subclasses are accepted), checked in the same output-then-input order. A
+non-`Tensor` definition, including `None` or a duck-typed object, raises
+`GraphValidationError` with `ops[INDEX] value definition 'NAME' must be a Tensor`
+before tensor attributes are accessed. Missing-reference errors for the current
+operation take precedence over definition-type errors.
+
+Unused value definitions are not checked. Read-only value mappings and repeated
+operands remain supported without mutation or report changes. Other direct graph
+fields, including the fields and shapes of `Tensor` instances, must satisfy the
+parsed graph invariants; these checks are not a general graph verifier or a
+revalidation of operation or tensor mutations.
 
 ## Cost definitions
 
