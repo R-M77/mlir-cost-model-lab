@@ -8,7 +8,13 @@ from math import isfinite
 from typing import Any
 
 from .models import Graph, Operation, Target, Tensor
-from .parser import SUPPORTED_OPS, GraphValidationError, _parse_target_number, parse_graph
+from .parser import (
+    SUPPORTED_OPS,
+    GraphValidationError,
+    _parse_target_number,
+    _require_nonempty_string,
+    parse_graph,
+)
 
 ELEMENTWISE_OPS = frozenset({"add", "mul", "relu"})
 
@@ -94,26 +100,49 @@ def _op_flops(operation: Operation, graph: Graph) -> int:
     return output.elements
 
 
+def _estimation_values(graph: Graph) -> Mapping[str, Tensor]:
+    values = getattr(graph, "values", None)
+    if not isinstance(values, Mapping):
+        raise GraphValidationError("graph values must be a mapping")
+    return values
+
+
 def _estimate_operations(graph: Graph) -> list[dict[str, Any]]:
+    if not isinstance(getattr(graph, "operations", None), (tuple, list)):
+        raise GraphValidationError("graph operations must be a tuple or list")
     reports: list[dict[str, Any]] = []
     for index, operation in enumerate(graph.operations):
-        if not isinstance(operation.kind, str) or operation.kind not in SUPPORTED_OPS:
+        if not isinstance(operation, Operation):
+            raise GraphValidationError(f"ops[{index}] must be an Operation definition")
+        kind = getattr(operation, "kind", None)
+        if not isinstance(kind, str) or kind not in SUPPORTED_OPS:
             supported = ", ".join(sorted(SUPPORTED_OPS))
             raise GraphValidationError(
-                f"ops[{index}] unsupported operation {operation.kind!r}; use one of {supported}"
+                f"ops[{index}] unsupported operation {kind!r}; use one of {supported}"
             )
-        for name in (operation.output, *operation.inputs):
-            if name not in graph.values:
+        _require_nonempty_string(getattr(operation, "name", None), f"ops[{index}].name")
+        _require_nonempty_string(getattr(operation, "output", None), f"ops[{index}].output")
+        inputs = getattr(operation, "inputs", None)
+        expected = 2 if kind in {"matmul", "add", "mul"} else 1
+        if not isinstance(inputs, (tuple, list)) or len(inputs) != expected:
+            raise GraphValidationError(
+                f"ops[{index}].inputs must contain exactly {expected} value names"
+            )
+        values = _estimation_values(graph)
+        for position, name in enumerate((operation.output, *inputs)):
+            if position:
+                _require_nonempty_string(name, f"ops[{index}].inputs[{position - 1}]")
+            if name not in values:
                 raise GraphValidationError(
                     f"ops[{index}] references missing value definition {name!r}"
                 )
-        for name in (operation.output, *operation.inputs):
-            if not isinstance(graph.values[name], Tensor):
+        for name in (operation.output, *inputs):
+            if not isinstance(values[name], Tensor):
                 raise GraphValidationError(
                     f"ops[{index}] value definition {name!r} must be a Tensor"
                 )
-        output = graph.values[operation.output]
-        bytes_read = sum(graph.values[name].nbytes for name in operation.inputs)
+        output = values[operation.output]
+        bytes_read = sum(values[name].nbytes for name in inputs)
         bytes_written = output.nbytes
         flops = _op_flops(operation, graph)
         reports.append(
@@ -133,6 +162,9 @@ def _estimate_operations(graph: Graph) -> list[dict[str, Any]]:
                 ),
             }
         )
+    # With no operations there is no per-operation mapping check above.
+    if not graph.operations:
+        _estimation_values(graph)
     return reports
 
 
@@ -173,7 +205,10 @@ def _validate_estimation_target(target: Target | None) -> None:
 
 
 def estimate_graph(graph: Graph) -> dict[str, Any]:
-    """Estimate a shape-inferred graph, validating its target before costing."""
+    """Estimate a shape-inferred graph, checking target and structural boundaries."""
+    # The dataclass's class-level None default would mask a deleted target field.
+    if "target" not in vars(graph):
+        raise GraphValidationError("graph target must be present")
     _validate_estimation_target(graph.target)
     operations = _estimate_operations(graph)
     total_flops = sum(item["flops"] for item in operations)

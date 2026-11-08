@@ -427,6 +427,9 @@ logical read accounting. See the formulas below and the implementations in
 fusion, it checks `Graph.target`: only `None` or a `Target` definition is
 accepted, not the target mapping used by the JSON input schema. Other types
 raise `GraphValidationError("graph target must be a Target definition or None")`.
+A deleted `Graph.target` field raises
+`GraphValidationError("graph target must be present")`; it is not treated as an
+explicit `None` target.
 
 Both target fields must be present and must satisfy the parser's positive,
 finite numeric-rate rules (including rejection of booleans). Validation checks
@@ -438,15 +441,36 @@ float rates, and `None` keep their existing reports. Finite integer rates whose
 scaled roofline arithmetic exceeds floating-point range raise the existing
 `roofline arithmetic exceeds finite floating-point range` validation error.
 
-Operation kinds must belong to the parser's supported-operation set. Unsupported
-kinds raise `GraphValidationError` with `ops[INDEX] unsupported operation 'KIND';
-use one of ...` and an alphabetically sorted list of supported kinds, rather than
-receiving elementwise costs. Target validation still runs first.
+`Graph.operations` must be a tuple or list of `Operation` definitions. Missing
+or malformed containers raise `GraphValidationError("graph operations must be a
+tuple or list")`; non-`Operation` entries raise `GraphValidationError` with
+`ops[INDEX] must be an Operation definition`. One-shot iterators are rejected
+without being consumed.
 
+Operation kinds must belong to the parser's supported-operation set. Unsupported
+or missing kinds raise `GraphValidationError` with `ops[INDEX] unsupported
+operation KIND; use one of ...` (using the kind's Python representation, or
+`None` when missing) and an alphabetically sorted list of supported kinds,
+rather than receiving elementwise costs. Target validation still runs first.
+Kind validation precedes other operation-field checks and value lookup.
+
+Each operation's `name` and `output` must be non-empty strings (not
+whitespace-only). Its `inputs` must be a tuple or list containing exactly two
+value names for `matmul`, `add`, or `mul`, or exactly one for other supported
+kinds. Input names must also be non-empty strings. Missing or malformed fields
+raise `GraphValidationError` with `ops[INDEX].FIELD must be a non-empty string`,
+`ops[INDEX].inputs must contain exactly N value names`, or
+`ops[INDEX].inputs[POSITION] must be a non-empty string`, before costing.
+Names and containers are not normalized or modified.
+
+`Graph.values` must be a mapping, including when there are no operations. A
+missing or malformed container raises
+`GraphValidationError("graph values must be a mapping")` before reference lookup.
 Before costing each operation, its output and then its inputs (in operand order)
 must have entries in `Graph.values`. A missing entry raises `GraphValidationError`
 with `ops[INDEX] references missing value definition 'NAME'` instead of `KeyError`.
-Operation-kind validation precedes these lookups. After all references for that
+An earlier missing reference also takes precedence over a malformed later input
+name. Operation-kind validation precedes these lookups. After all references for that
 operation are found, each referenced definition must be a `Tensor` instance
 (subclasses are accepted), checked in the same output-then-input order. A
 non-`Tensor` definition, including `None` or a duck-typed object, raises
@@ -457,8 +481,9 @@ operation take precedence over definition-type errors.
 Unused value definitions are not checked. Read-only value mappings and repeated
 operands remain supported without mutation or report changes. Other direct graph
 fields, including the fields and shapes of `Tensor` instances, must satisfy the
-parsed graph invariants; these checks are not a general graph verifier or a
-revalidation of operation or tensor mutations.
+parsed graph invariants. These structural checks are not a general graph
+verifier: they do not re-infer shapes, validate tensor internals, or establish
+operation dtype/shape compatibility or graph topology.
 
 ## Cost definitions
 

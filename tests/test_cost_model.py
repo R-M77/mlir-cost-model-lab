@@ -1144,6 +1144,265 @@ def test_oversized_integer_target_returns_validation_and_cli_errors(
     assert result.stderr == f"error: {message}\n"
 
 
+def test_direct_estimate_graph_rejects_deleted_operations_container() -> None:
+    graph = parse_graph(EXAMPLE_GRAPH)
+    object.__delattr__(graph, "operations")
+
+    with pytest.raises(GraphValidationError) as error:
+        estimate_graph(graph)
+
+    assert str(error.value) == "graph operations must be a tuple or list"
+
+
+@pytest.mark.parametrize("field", ["target", "values"])
+def test_direct_estimate_graph_rejects_deleted_graph_fields(field: str) -> None:
+    graph = parse_graph(EXAMPLE_GRAPH)
+    object.__delattr__(graph, field)
+    message = (
+        "graph target must be present"
+        if field == "target"
+        else "graph values must be a mapping"
+    )
+
+    for _ in range(2):
+        with pytest.raises(GraphValidationError) as error:
+            estimate_graph(graph)
+        assert str(error.value) == message
+    assert field not in vars(graph)
+
+
+@pytest.mark.parametrize("field", ["operations", "values"])
+@pytest.mark.parametrize("container", [None, 7, "invalid", {"invalid"}])
+def test_direct_estimate_graph_rejects_malformed_graph_containers(
+    field: str, container: object
+) -> None:
+    graph = replace(parse_graph(EXAMPLE_GRAPH), **{field: container})
+    message = (
+        "graph operations must be a tuple or list"
+        if field == "operations"
+        else "graph values must be a mapping"
+    )
+    original = deepcopy(vars(graph))
+
+    for _ in range(2):
+        with pytest.raises(GraphValidationError) as error:
+            estimate_graph(graph)
+        assert str(error.value) == message
+    assert vars(graph) == original
+    assert getattr(graph, field) is container
+
+
+@pytest.mark.parametrize("field", ["operations", "values"])
+def test_direct_estimate_graph_rejects_one_shot_graph_containers_without_consuming(
+    field: str,
+) -> None:
+    graph = parse_graph(EXAMPLE_GRAPH)
+    entries = tuple(getattr(graph, field))
+    container = iter(entries)
+    graph = replace(graph, **{field: container})
+    message = (
+        "graph operations must be a tuple or list"
+        if field == "operations"
+        else "graph values must be a mapping"
+    )
+
+    with pytest.raises(GraphValidationError) as error:
+        estimate_graph(graph)
+
+    assert str(error.value) == message
+    assert tuple(container) == entries
+
+
+@pytest.mark.parametrize(
+    "definition", [None, {}, SimpleNamespace(kind="matmul")]
+)
+def test_direct_estimate_graph_rejects_non_operation_definitions(definition: object) -> None:
+    graph = replace(parse_graph(EXAMPLE_GRAPH), operations=(definition,))
+
+    for _ in range(2):
+        with pytest.raises(GraphValidationError) as error:
+            estimate_graph(graph)
+        assert str(error.value) == "ops[0] must be an Operation definition"
+    assert graph.operations[0] is definition
+
+
+@pytest.mark.parametrize("field", ["name", "kind", "inputs", "output"])
+def test_direct_estimate_graph_rejects_deleted_operation_fields(field: str) -> None:
+    graph = parse_graph(EXAMPLE_GRAPH)
+    operation = graph.operations[0]
+    object.__delattr__(operation, field)
+    messages = {
+        "name": "ops[0].name must be a non-empty string",
+        "kind": (
+            "ops[0] unsupported operation None; use one of "
+            "add, layer_norm, matmul, mul, reduce_sum, relu, softmax"
+        ),
+        "inputs": "ops[0].inputs must contain exactly 2 value names",
+        "output": "ops[0].output must be a non-empty string",
+    }
+
+    for _ in range(2):
+        with pytest.raises(GraphValidationError) as error:
+            estimate_graph(graph)
+        assert str(error.value) == messages[field]
+    assert field not in vars(operation)
+
+
+@pytest.mark.parametrize("field", ["name", "output"])
+@pytest.mark.parametrize("value", [None, [], {}, 3, "", "   "])
+def test_direct_estimate_graph_rejects_malformed_operation_names(
+    field: str, value: object
+) -> None:
+    graph = parse_graph(EXAMPLE_GRAPH)
+    object.__setattr__(graph.operations[0], field, value)
+    original = deepcopy(graph)
+
+    with pytest.raises(GraphValidationError) as error:
+        estimate_graph(graph)
+
+    assert str(error.value) == f"ops[0].{field} must be a non-empty string"
+    assert graph == original
+
+
+@pytest.mark.parametrize("inputs", [None, "lhs", {"lhs": None}, (), ("lhs",), ("lhs",) * 3])
+def test_direct_estimate_graph_rejects_malformed_operation_inputs(inputs: object) -> None:
+    graph = parse_graph(EXAMPLE_GRAPH)
+    object.__setattr__(graph.operations[0], "inputs", inputs)
+
+    with pytest.raises(GraphValidationError) as error:
+        estimate_graph(graph)
+
+    assert str(error.value) == "ops[0].inputs must contain exactly 2 value names"
+    assert graph.operations[0].inputs is inputs
+
+
+@pytest.mark.parametrize("position", [0, 1])
+@pytest.mark.parametrize("name", [None, [], {}, 3, "", "   "])
+def test_direct_estimate_graph_rejects_malformed_input_references(
+    position: int, name: object
+) -> None:
+    graph = parse_graph(EXAMPLE_GRAPH)
+    inputs: list[object] = list(graph.operations[0].inputs)
+    inputs[position] = name
+    object.__setattr__(graph.operations[0], "inputs", inputs)
+
+    with pytest.raises(GraphValidationError) as error:
+        estimate_graph(graph)
+
+    assert str(error.value) == f"ops[0].inputs[{position}] must be a non-empty string"
+    assert graph.operations[0].inputs is inputs
+    assert inputs[position] is name
+
+
+@pytest.mark.parametrize("kind", ["matmul", "add", "mul", "relu", "softmax", "layer_norm", "reduce_sum"])
+def test_direct_estimate_graph_validates_input_arity_for_each_kind(kind: str) -> None:
+    graph = parse_graph(EXAMPLE_GRAPH)
+    operation = replace(graph.operations[0], kind=kind, inputs=())
+    graph = replace(graph, operations=(operation,))
+    expected = 2 if kind in {"matmul", "add", "mul"} else 1
+
+    with pytest.raises(GraphValidationError) as error:
+        estimate_graph(graph)
+
+    assert str(error.value) == f"ops[0].inputs must contain exactly {expected} value names"
+
+
+@pytest.mark.parametrize("broken_field", ["operations", "values"])
+def test_direct_estimate_graph_checks_target_before_malformed_containers(broken_field: str) -> None:
+    graph = parse_graph(EXAMPLE_GRAPH)
+    graph = replace(graph, target=Target(0, 0), **{broken_field: None})
+
+    with pytest.raises(GraphValidationError) as error:
+        estimate_graph(graph)
+
+    assert str(error.value) == "target.peak_compute_gflops must be a positive finite number"
+
+
+@pytest.mark.parametrize("field", ["name", "inputs", "output", "values"])
+def test_direct_estimate_graph_checks_kind_before_malformed_fields_or_values(field: str) -> None:
+    graph = parse_graph(EXAMPLE_GRAPH)
+    object.__setattr__(graph.operations[0], "kind", "mystery")
+    object.__delattr__(graph if field == "values" else graph.operations[0], field)
+
+    with pytest.raises(GraphValidationError) as error:
+        estimate_graph(graph)
+
+    assert str(error.value) == (
+        "ops[0] unsupported operation 'mystery'; use one of "
+        "add, layer_norm, matmul, mul, reduce_sum, relu, softmax"
+    )
+
+
+@pytest.mark.parametrize("missing", [("product", "lhs", "rhs"), ("lhs", "rhs")])
+def test_direct_estimate_graph_preserves_missing_reference_order(missing: tuple[str, ...]) -> None:
+    graph = parse_graph(EXAMPLE_GRAPH)
+    for name in reversed(missing):
+        del graph.values[name]
+    values = MappingProxyType(graph.values)
+    graph = replace(graph, values=values)
+    original = dict(values)
+
+    with pytest.raises(GraphValidationError) as error:
+        estimate_graph(graph)
+
+    assert str(error.value) == f"ops[0] references missing value definition {missing[0]!r}"
+    assert dict(values) == original
+    assert graph.values is values
+
+
+@pytest.mark.parametrize(("missing", "invalid_position"), [("product", 0), ("lhs", 1)])
+def test_direct_estimate_graph_checks_earlier_references_before_malformed_later_names(
+    missing: str, invalid_position: int
+) -> None:
+    graph = parse_graph(EXAMPLE_GRAPH)
+    del graph.values[missing]
+    inputs: list[object] = list(graph.operations[0].inputs)
+    inputs[invalid_position] = []
+    object.__setattr__(graph.operations[0], "inputs", inputs)
+
+    with pytest.raises(GraphValidationError) as error:
+        estimate_graph(graph)
+
+    assert str(error.value) == f"ops[0] references missing value definition {missing!r}"
+
+
+@pytest.mark.parametrize("operations_type", [tuple, list])
+@pytest.mark.parametrize("inputs_type", [tuple, list])
+@pytest.mark.parametrize("values_type", [dict, UserDict, MappingProxyType])
+def test_direct_estimate_graph_preserves_supported_structural_containers(
+    operations_type, inputs_type, values_type
+) -> None:
+    graph = parse_graph(EXAMPLE_GRAPH)
+    graph = replace(
+        graph,
+        operations=operations_type(
+            replace(operation, inputs=inputs_type(operation.inputs))
+            for operation in graph.operations
+        ),
+        values=values_type(graph.values),
+    )
+    original_operations = deepcopy(graph.operations)
+    original_values = dict(graph.values)
+    operations = graph.operations
+    values = graph.values
+
+    assert estimate_graph(graph) == analyze_graph(EXAMPLE_GRAPH)
+    assert graph.operations == original_operations
+    assert dict(values) == original_values
+    assert graph.operations is operations
+    assert graph.values is values
+
+
+@pytest.mark.parametrize("operations", [(), []])
+def test_direct_estimate_graph_checks_value_container_for_empty_graph(operations) -> None:
+    graph = replace(parse_graph(EXAMPLE_GRAPH), operations=operations, values=None)
+
+    with pytest.raises(GraphValidationError) as error:
+        estimate_graph(graph)
+
+    assert str(error.value) == "graph values must be a mapping"
+
+
 def test_direct_estimate_graph_rejects_unsupported_operation_kind() -> None:
     graph = parse_graph(EXAMPLE_GRAPH)
     graph = replace(
