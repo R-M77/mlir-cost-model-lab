@@ -21,6 +21,7 @@ from cost_model import (
     load_graph,
     parse_graph,
 )
+from cost_model.models import DTYPE_BYTES
 
 
 EXAMPLE_GRAPH = {
@@ -1513,9 +1514,207 @@ def test_direct_estimate_graph_preserves_precedence_over_definition_types(
     assert str(error.value) == message
 
 
+def test_direct_estimate_graph_rejects_unsupported_tensor_dtype() -> None:
+    graph = parse_graph(EXAMPLE_GRAPH)
+    object.__setattr__(graph.values["lhs"], "dtype", "wat")
+    original = deepcopy(graph)
+
+    for _ in range(2):
+        with pytest.raises(GraphValidationError) as error:
+            estimate_graph(graph)
+        assert str(error.value) == (
+            "ops[0] value definition 'lhs' dtype must be a supported string"
+        )
+    assert graph == original
+
+
+@pytest.mark.parametrize(("name", "index"), [("product", 0), ("lhs", 0), ("output", 2)])
+@pytest.mark.parametrize(
+    ("field", "value", "diagnostic"),
+    [
+        ("shape", None, "shape must be a tuple or list"),
+        ("shape", 3, "shape must be a tuple or list"),
+        ("shape", "23", "shape must be a tuple or list"),
+        ("shape", {2: 3}, "shape must be a tuple or list"),
+        ("shape", {2, 3}, "shape must be a tuple or list"),
+        ("dtype", None, "dtype must be a supported string"),
+        ("dtype", "wat", "dtype must be a supported string"),
+        ("dtype", [], "dtype must be a supported string"),
+        ("dtype", {}, "dtype must be a supported string"),
+        ("dtype", 3, "dtype must be a supported string"),
+        ("dtype", True, "dtype must be a supported string"),
+    ],
+)
+def test_direct_estimate_graph_rejects_malformed_tensor_fields(
+    name: str, index: int, field: str, value: object, diagnostic: str
+) -> None:
+    graph = parse_graph(EXAMPLE_GRAPH)
+    tensor = graph.values[name]
+    object.__setattr__(tensor, field, value)
+    original = deepcopy(graph)
+    values = MappingProxyType(graph.values)
+    graph = replace(graph, values=values)
+
+    for _ in range(2):
+        with pytest.raises(GraphValidationError) as error:
+            estimate_graph(graph)
+        assert str(error.value) == f"ops[{index}] value definition {name!r} {diagnostic}"
+    assert dict(graph.values) == original.values
+    assert graph.inputs == original.inputs
+    assert graph.operations == original.operations
+    assert graph.values is values
+    assert graph.values[name] is tensor
+    assert getattr(tensor, field) is value
+
+
+@pytest.mark.parametrize("name", ["product", "lhs"])
+@pytest.mark.parametrize("field", ["shape", "dtype"])
+def test_direct_estimate_graph_rejects_deleted_tensor_fields(name: str, field: str) -> None:
+    graph = parse_graph(EXAMPLE_GRAPH)
+    tensor = graph.values[name]
+    object.__delattr__(tensor, field)
+    original = deepcopy(vars(tensor))
+    diagnostic = (
+        "shape must be a tuple or list"
+        if field == "shape"
+        else "dtype must be a supported string"
+    )
+
+    for _ in range(2):
+        with pytest.raises(GraphValidationError) as error:
+            estimate_graph(graph)
+        assert str(error.value) == f"ops[0] value definition {name!r} {diagnostic}"
+    assert vars(tensor) == original
+    assert field not in vars(tensor)
+
+
+@pytest.mark.parametrize("shape_type", [tuple, list])
+@pytest.mark.parametrize("dimension", ["x", 1.5, True, False, 0, -1, None, []])
+def test_direct_estimate_graph_rejects_malformed_tensor_dimensions(
+    shape_type, dimension: object
+) -> None:
+    graph = parse_graph(EXAMPLE_GRAPH)
+    shape = shape_type((2, dimension))
+    object.__setattr__(graph.values["lhs"], "shape", shape)
+    original = deepcopy(graph)
+
+    for _ in range(2):
+        with pytest.raises(GraphValidationError) as error:
+            estimate_graph(graph)
+        assert str(error.value) == (
+            "ops[0] value definition 'lhs' shape dimension 1 must be a positive integer"
+        )
+    assert graph == original
+    assert graph.values["lhs"].shape is shape
+
+
+def test_direct_estimate_graph_rejects_tensor_shape_iterator_without_consuming() -> None:
+    graph = parse_graph(EXAMPLE_GRAPH)
+    shape = iter((2, 3))
+    object.__setattr__(graph.values["lhs"], "shape", shape)
+
+    for _ in range(2):
+        with pytest.raises(GraphValidationError) as error:
+            estimate_graph(graph)
+        assert str(error.value) == (
+            "ops[0] value definition 'lhs' shape must be a tuple or list"
+        )
+    assert graph.values["lhs"].shape is shape
+    assert tuple(shape) == (2, 3)
+
+
+@pytest.mark.parametrize(
+    ("earlier_error", "message"),
+    [
+        ("target", "target.peak_compute_gflops must be a positive finite number"),
+        ("name", "ops[0].name must be a non-empty string"),
+        ("inputs", "ops[0].inputs must contain exactly 2 value names"),
+        ("input-name", "ops[0].inputs[1] must be a non-empty string"),
+        ("missing-input", "ops[0] references missing value definition 'rhs'"),
+        ("definition-type", "ops[0] value definition 'rhs' must be a Tensor"),
+    ],
+)
+def test_direct_estimate_graph_preserves_precedence_over_tensor_fields(
+    earlier_error: str, message: str
+) -> None:
+    graph = parse_graph(EXAMPLE_GRAPH)
+    object.__setattr__(graph.values["product"], "shape", ("x",))
+    object.__setattr__(graph.values["lhs"], "dtype", "wat")
+    if earlier_error == "target":
+        graph = replace(graph, target=Target(0, 0))
+    elif earlier_error == "name":
+        object.__delattr__(graph.operations[0], "name")
+    elif earlier_error == "inputs":
+        object.__setattr__(graph.operations[0], "inputs", ())
+    elif earlier_error == "input-name":
+        object.__setattr__(graph.operations[0], "inputs", ("lhs", []))
+    elif earlier_error == "missing-input":
+        del graph.values["rhs"]
+    else:
+        graph.values["rhs"] = None  # type: ignore[assignment]
+
+    with pytest.raises(GraphValidationError) as error:
+        estimate_graph(graph)
+
+    assert str(error.value) == message
+
+
+@pytest.mark.parametrize(
+    ("names", "first"),
+    [(("rhs", "lhs", "product"), "product"), (("rhs", "lhs"), "lhs")],
+)
+def test_direct_estimate_graph_checks_tensor_fields_in_reference_order(
+    names: tuple[str, ...], first: str
+) -> None:
+    graph = parse_graph(EXAMPLE_GRAPH)
+    for name in names:
+        object.__setattr__(graph.values[name], "dtype", "wat")
+
+    with pytest.raises(GraphValidationError) as error:
+        estimate_graph(graph)
+
+    assert str(error.value) == (
+        f"ops[0] value definition {first!r} dtype must be a supported string"
+    )
+
+
+def test_direct_estimate_graph_checks_tensor_shape_before_dtype() -> None:
+    graph = parse_graph(EXAMPLE_GRAPH)
+    object.__setattr__(graph.values["lhs"], "shape", ("x",))
+    object.__setattr__(graph.values["lhs"], "dtype", [])
+
+    with pytest.raises(GraphValidationError) as error:
+        estimate_graph(graph)
+
+    assert str(error.value) == (
+        "ops[0] value definition 'lhs' shape dimension 0 must be a positive integer"
+    )
+
+
+@pytest.mark.parametrize("shape_type", [tuple, list])
+@pytest.mark.parametrize("dtype", sorted(DTYPE_BYTES))
+def test_direct_estimate_graph_preserves_scalar_tensor_shapes(shape_type, dtype: str) -> None:
+    payload = {
+        "name": "scalar_relu",
+        "inputs": {"source": {"shape": [], "dtype": dtype}},
+        "ops": [
+            {"name": "relu", "op": "relu", "inputs": ["source"], "outputs": ["result"]}
+        ],
+        "outputs": ["result"],
+    }
+    graph = parse_graph(payload)
+    for tensor in graph.values.values():
+        object.__setattr__(tensor, "shape", shape_type())
+    original = deepcopy(graph)
+
+    assert estimate_graph(graph) == analyze_graph(payload)
+    assert graph == original
+
+
 @pytest.mark.parametrize("repeated_operands", [False, True])
+@pytest.mark.parametrize("shape_type", [tuple, list])
 def test_direct_estimate_graph_preserves_tensor_subclasses_and_read_only_values(
-    repeated_operands: bool,
+    repeated_operands: bool, shape_type
 ) -> None:
     class SpecializedTensor(Tensor):
         pass
@@ -1525,10 +1724,13 @@ def test_direct_estimate_graph_preserves_tensor_subclasses_and_read_only_values(
         payload["ops"][0].update(op="mul", inputs=["source", "source"])
     graph = parse_graph(payload)
     values = {
-        name: SpecializedTensor(tensor.name, tensor.shape, tensor.dtype)
+        name: SpecializedTensor(tensor.name, shape_type(tensor.shape), tensor.dtype)
         for name, tensor in graph.values.items()
     }
     values["unused"] = None  # type: ignore[assignment]
+    values["unused_tensor"] = SpecializedTensor(
+        "unused_tensor", ("x",), "wat"  # type: ignore[arg-type]
+    )
     original = dict(values)
     read_only_values = MappingProxyType(values)
     graph = replace(graph, values=read_only_values)  # type: ignore[arg-type]

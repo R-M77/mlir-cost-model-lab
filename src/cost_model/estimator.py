@@ -7,7 +7,7 @@ from collections.abc import Mapping
 from math import isfinite
 from typing import Any
 
-from .models import Graph, Operation, Target, Tensor
+from .models import DTYPE_BYTES, Graph, Operation, Target, Tensor
 from .parser import (
     SUPPORTED_OPS,
     GraphValidationError,
@@ -107,6 +107,21 @@ def _estimation_values(graph: Graph) -> Mapping[str, Tensor]:
     return values
 
 
+def _validate_estimation_tensor(tensor: Tensor, label: str) -> None:
+    """Check referenced storage fields before arithmetic, without normalization."""
+    shape = getattr(tensor, "shape", None)
+    if not isinstance(shape, (tuple, list)):
+        raise GraphValidationError(f"{label} shape must be a tuple or list")
+    for index, dimension in enumerate(shape):
+        if isinstance(dimension, bool) or not isinstance(dimension, int) or dimension <= 0:
+            raise GraphValidationError(
+                f"{label} shape dimension {index} must be a positive integer"
+            )
+    dtype = getattr(tensor, "dtype", None)
+    if not isinstance(dtype, str) or dtype not in DTYPE_BYTES:
+        raise GraphValidationError(f"{label} dtype must be a supported string")
+
+
 def _estimate_operations(graph: Graph) -> list[dict[str, Any]]:
     if not isinstance(getattr(graph, "operations", None), (tuple, list)):
         raise GraphValidationError("graph operations must be a tuple or list")
@@ -141,6 +156,9 @@ def _estimate_operations(graph: Graph) -> list[dict[str, Any]]:
                 raise GraphValidationError(
                     f"ops[{index}] value definition {name!r} must be a Tensor"
                 )
+        # Keep all reference and definition-type checks ahead of tensor internals.
+        for name in (operation.output, *inputs):
+            _validate_estimation_tensor(values[name], f"ops[{index}] value definition {name!r}")
         output = values[operation.output]
         bytes_read = sum(values[name].nbytes for name in inputs)
         bytes_written = output.nbytes

@@ -552,12 +552,30 @@ non-`Tensor` definition, including `None` or a duck-typed object, raises
 before tensor attributes are accessed. Missing-reference errors for the current
 operation take precedence over definition-type errors.
 
-Unused value definitions are not checked. Read-only value mappings and repeated
-operands remain supported without mutation or report changes. Other direct graph
-fields, including the fields and shapes of `Tensor` instances, must satisfy the
-parsed graph invariants. These structural checks are not a general graph
-verifier: they do not re-infer shapes, validate tensor internals, or establish
-operation dtype/shape compatibility or graph topology.
+After all referenced definitions for the current operation pass the `Tensor`
+instance check, their storage fields are checked in output-then-input order,
+with shape checked before dtype for each tensor:
+
+- `shape` must be present and be a tuple or list. Missing or malformed shapes
+  raise `GraphValidationError` with `ops[INDEX] value definition 'NAME' shape must
+  be a tuple or list`. One-shot shape iterators are rejected without consumption.
+- Each shape dimension must be a positive integer, excluding booleans. Invalid
+  dimensions raise `GraphValidationError` with `ops[INDEX] value definition 'NAME'
+  shape dimension POSITION must be a positive integer`. Empty shapes remain
+  valid scalar storage shapes.
+- `dtype` must be present and be a supported dtype string. Missing, non-string,
+  or unsupported dtypes raise `GraphValidationError` with `ops[INDEX] value
+  definition 'NAME' dtype must be a supported string` instead of leaking lookup
+  or arithmetic errors.
+
+Missing-reference and definition-type errors for the current operation still
+precede tensor-storage errors. Unused value definitions are not checked.
+Read-only value mappings, `Tensor` subclasses, tuple/list shapes, and repeated
+operands remain supported without mutation, normalization, or report changes.
+Other direct graph fields must satisfy the parsed graph invariants. These
+checks are not a general graph verifier: they do not validate tensor names,
+re-infer shapes, or establish operation dtype/shape compatibility or graph
+topology.
 
 ## Cost definitions
 
