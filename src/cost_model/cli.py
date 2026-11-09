@@ -10,6 +10,7 @@ from math import isfinite
 from pathlib import Path
 from typing import Any, Sequence, TypeGuard
 
+from .comparison import compare_baseline
 from .estimator import _intensity, estimate_graph
 from .lowering import compare_matmul_lowering_graph
 from .mlir_emitter import emit_matmul_mlir_graph
@@ -396,6 +397,12 @@ def _build_parser() -> argparse.ArgumentParser:
         help="check benchmark aggregate and optional per-case metric budgets",
     )
     parser.add_argument(
+        "--compare-baseline",
+        type=Path,
+        metavar="REPORT.json",
+        help="fail on per-case cost increases against a saved benchmark report",
+    )
+    parser.add_argument(
         "--compact",
         action="store_true",
         help="emit one-line JSON instead of the default readable form",
@@ -447,6 +454,8 @@ def _build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
+    if args.compare_baseline is not None and args.benchmark is None:
+        parser.error("--compare-baseline requires --benchmark JSON")
     if args.emit_mlir:
         if args.graph is None or args.benchmark is not None:
             parser.error("--emit-mlir requires a single graph path")
@@ -479,6 +488,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error("--budget requires --benchmark JSON")
 
     violations: list[dict[str, Any]] = []
+    comparison_violations: list[dict[str, Any]] = []
     try:
         if not args.lower_matmul and (args.tile_size != 16 or args.vector_width != 4):
             raise GraphValidationError(
@@ -493,6 +503,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             if budget is not None:
                 violations = _check_budget(report, budget, optimize=args.optimize)
+            if args.compare_baseline is not None:
+                report["comparison"], comparison_violations = compare_baseline(
+                    report, args.compare_baseline, optimize=args.optimize
+                )
         else:
             assert args.graph is not None
             graph = load_graph(args.graph)
@@ -512,7 +526,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
-    # Presentation-only: do not change case validation, selection, or budgets.
+    # Presentation-only: do not change validation, selection, or regression gates.
     # This deliberately does not claim to anonymize graph contents or stderr.
     output_report = report
     if args.omit_paths:
@@ -530,5 +544,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(json.dumps(output_report, indent=2))
     if violations:
         print(f"error: {_budget_diagnostic(violations)}", file=sys.stderr)
+    if comparison_violations:
+        diagnostic = json.dumps(
+            {"error": "benchmark baseline exceeded", "violations": comparison_violations},
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        print(f"error: {diagnostic}", file=sys.stderr)
+    if violations or comparison_violations:
         return 2
     return 0

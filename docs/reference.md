@@ -22,6 +22,7 @@ The package under `src/cost_model` is split into small layers:
 - `parser.py` — JSON schema validation, value lookup, and static shape inference.
 - `estimator.py` — FLOP, byte-traffic, arithmetic-intensity, roofline, and baseline fusion calculations.
 - `optimizer.py` — opt-in liveness-aware elementwise fusion planning and before/after reporting.
+- `comparison.py` — saved batch-report compatibility and per-case cost regression comparison.
 - [`lowering.py`](../src/cost_model/lowering.py) — an opt-in, target-independent scalar or tiled/vector matmul lowering exercise and cost comparison.
 - [`mlir_emitter.py`](../src/cost_model/mlir_emitter.py) — deterministic textual MLIR emission for one standalone rank-2 f32 matmul.
 - `cli.py` / `__main__.py` — stable `python -m cost_model` interface, batch benchmark mode, deterministic budget gate, and readable JSON output.
@@ -166,8 +167,81 @@ error instead of inventing a value. Unknown fields, unsupported metrics,
 non-finite values, missing aggregate limits, and unknown case names are errors.
 On a violation the command keeps the normal report on stdout, emits a
 single-line `error: {...}` JSON diagnostic on stderr, and exits with status `2`.
-Without `--budget`, existing single-graph and batch commands and their JSON
-output are unchanged.
+Adding `--budget` alone does not change batch JSON output; the separate
+`--compare-baseline` flag below adds its comparison artifact.
+
+## Saved benchmark comparison
+
+`--compare-baseline REPORT.json` accepts saved **batch output**, not a benchmark
+manifest or budget file. For the included normal-mode batch, run:
+
+```bash
+PYTHONPATH=src python -m cost_model --benchmark benchmarks/target_bounds.json \
+  --compare-baseline benchmarks/target_bounds.expected.json --compact
+```
+
+Save your own selected, optimized baseline and use the same selection and mode
+for the next run (redirect to a different output file, never over the baseline):
+
+```bash
+mkdir -p outputs
+PYTHONPATH=src python -m cost_model --benchmark benchmarks/target_bounds.json \
+  --case memory_bound_relu --optimize --omit-paths --compact \
+  > outputs/selected.baseline.json
+PYTHONPATH=src python -m cost_model --benchmark benchmarks/target_bounds.json \
+  --case memory_bound_relu --optimize --omit-paths --compact \
+  --compare-baseline outputs/selected.baseline.json
+```
+
+Compatibility is based on the existing, unversioned batch schema:
+
+- The non-empty `cases` array must have unique, non-empty `name` strings and
+  object `report` values. The saved and current **selected case sets must be
+  identical**; the gate does not silently intersect or filter the saved report.
+  Cases match by effective name (explicit manifest name, otherwise graph name),
+  not array position, graph label, or file path. `path` may differ or be absent.
+- Normal mode reads `report.totals`; `--optimize` reads
+  `report.optimized.totals`, not the embedded unfused baseline. Both runs must
+  use the same mode. Incomplete optimizer wrappers and hybrid normal/optimized
+  structures are rejected, not interpreted as legacy schemas.
+- Explicit `target` metadata is required, including `null` for target-less
+  reports. Non-null targets must obey the graph target schema and have equal
+  compute and bandwidth ceilings between runs. In an optimized report the root,
+  embedded baseline, and optimized targets must also agree. Older/trimmed reports
+  missing this metadata are rejected rather than assuming a target.
+- Selected totals require non-negative integer `flops`, `bytes_read`, and
+  `bytes_written`; `logical_bytes` is derived from the latter two, as in current
+  per-case output. With a target, `totals.roofline.estimated_time_us` must be a
+  finite non-negative number. Without a target, `totals.roofline` must be explicit
+  `null`, and time's baseline/current/delta values are all `null`. A mixed-target
+  batch still compares time for each targeted case, even when summary time is null.
+
+The gate adds a `comparison` object to stdout, containing `mode` (`baseline` or
+`optimized`), boolean `passed`, and a name-sorted `cases` array. Each entry has
+`name` plus `baseline`, `current`, and `delta` objects, each with the fixed metric
+keys `flops`, `logical_bytes`, and `estimated_time_us`. Delta is **current minus
+saved baseline**: positive is worse; negative is better. No tolerance or aggregate
+offset is applied. For example, a ReLU growing from 2 to 3 elements has
+`delta: {"flops": 1, "logical_bytes": 8, "estimated_time_us": null}` without a target.
+
+Any per-case increase emits the report and artifact on stdout and a single-line
+`error: {...}` JSON diagnostic on stderr with `error: "benchmark baseline exceeded"`
+and `violations` containing `case`, `metric`, `baseline`, `current`, and `delta`.
+The command returns `2`; equality or improvement returns `0` with empty stderr.
+Malformed JSON/UTF-8, duplicate JSON keys, missing comparison inputs, and incompatible
+runs instead return `2` with a clear error and empty stdout. With `--budget`, both
+gates apply; when both fail, stderr contains one diagnostic line per gate (budget
+first). `--omit-paths` and `--compact` retain their presentation-only behavior.
+Without `--compare-baseline`, batch JSON is unchanged. The flag is rejected
+outside benchmark mode, including single-graph lowering and MLIR emission.
+
+This is a bounded cost gate, not a general saved-report verifier: aggregate
+`summary`, operation details, fusion annotations, and any previous `comparison`
+are not used or recomputed. There is no schema/model-version or graph-content
+fingerprint, so callers must retain consistent model semantics and meaningful case
+identities across revisions. Renaming a case requires explicitly saving a new
+baseline. Estimates remain logical-model costs and idealized time, not measured
+performance. Use reasonably sized, trusted reports as for other JSON inputs.
 
 ## Matmul lowering exercise
 

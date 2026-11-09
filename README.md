@@ -27,7 +27,7 @@ ceilings you supply.
 - **Textual MLIR emission:** deterministic MLIR for one standalone rank-2 f32
   matmul, without requiring MLIR tooling
 - **Deterministic regression checks:** batch cases, exact JSON fixtures, case
-  selection, and aggregate/per-case budget gates with nonzero failure status
+  selection, absolute budgets, and saved-report per-case cost comparison gates
 
 ## Run a reproducible example
 
@@ -155,6 +155,25 @@ bounds: equality passes. Invalid budgets or unavailable requested metrics fail
 closed. A violation keeps the report on stdout, emits a one-line `error: {...}`
 JSON diagnostic on stderr, and exits with status `2`.
 
+Compare against a saved batch report instead of choosing absolute limits:
+
+```bash
+PYTHONPATH=src python -m cost_model --benchmark benchmarks/target_bounds.json \
+  --compare-baseline benchmarks/target_bounds.expected.json --compact
+```
+
+`--compare-baseline REPORT.json` is batch-only. It matches the exact selected
+case set by effective name, ignoring case order and path fields. It compares
+per-case `flops`, logical bytes (reads + writes), and available roofline time in
+the same normal or `--optimize` mode and with identical target ceilings.
+Any increase fails with status `2`, even if another case offsets it; equality
+and improvements pass. Stdout retains the batch report and adds `comparison`
+with name-sorted per-case `baseline`, `current`, and signed `delta` metrics;
+failures also produce case-specific JSON diagnostics on stderr. Missing metrics
+and incompatible reports fail closed. See the [comparison contract](docs/reference.md#saved-benchmark-comparison)
+for saving selected/optimized baselines and compatibility limits. Without this
+flag, existing JSON output is unchanged. It can be combined with `--budget`.
+
 `--omit-paths` removes only `cases[*].path` from batch JSON stdout, in readable
 or compact output, including when a budget fails. It leaves names, reports,
 input files, validation, selection, optimization, and budget checks unchanged.
@@ -213,7 +232,8 @@ dtype, and removes the last axis (a rank-1 input produces scalar shape `[]`).
 | `optimizer.py` | Liveness and legality-scoped fusion cost planning |
 | `lowering.py` | Scalar and tiled/vector matmul representations |
 | `mlir_emitter.py` | Deterministic standalone matmul MLIR emission |
-| `cli.py` / `__main__.py` | Single/batch reports, selection, budgets and output controls |
+| `comparison.py` | Saved-report compatibility and per-case regression artifacts |
+| `cli.py` / `__main__.py` | Single/batch reports, selection, gates and output controls |
 
 The opt-in optimizer retains an unchanged `baseline`, reports `optimized` costs,
 and emits signed after-minus-before `cost_delta` values. It removes operations
