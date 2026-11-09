@@ -185,7 +185,12 @@ def test_comparison_rejects_excessive_json_nesting(tmp_path: Path) -> None:
 
     assert result.returncode == 2
     assert result.stdout == ""
-    assert result.stderr == "error: invalid baseline JSON: nesting exceeds decoder limits\n"
+    # Decoder nesting limits differ across supported Python versions. A decoder
+    # that accepts this input must still reject its missing benchmark cases.
+    assert result.stderr in {
+        "error: invalid baseline JSON: nesting exceeds decoder limits\n",
+        "error: invalid baseline cases must be a non-empty array\n",
+    }
     assert "Traceback" not in result.stderr
     assert "private_marker" not in result.stderr
 
