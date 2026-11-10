@@ -11,6 +11,9 @@ requires-python = ">=3.11"
 authors = [{ name = "Portfolio Project" }]
 dependencies = []
 
+[project.scripts]
+cost-model = "cost_model.cli:main"
+
 [project.optional-dependencies]
 test = ["pytest>=8.0"]
 

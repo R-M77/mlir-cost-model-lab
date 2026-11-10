@@ -31,7 +31,19 @@ ceilings you supply.
 
 ## Run a reproducible example
 
-Requires Python 3.11+. From the repository root, no installation is needed:
+Requires Python 3.11+. To install the `cost-model` command, run from the
+repository root:
+
+```bash
+python -m venv .venv
+. .venv/bin/activate
+python -m pip install -e '.[test]'
+cost-model examples/matmul_bias_relu.json
+cost-model --optimize examples/matmul_bias_relu.json
+```
+
+After installation, `python -m cost_model` accepts the same arguments. To run
+directly from the repository without installing:
 
 ```bash
 PYTHONPATH=src python -m cost_model examples/matmul_bias_relu.json
