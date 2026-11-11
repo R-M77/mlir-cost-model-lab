@@ -5,11 +5,12 @@ import os
 import subprocess
 import sys
 from copy import deepcopy
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
-from cost_model import analyze_graph, optimize_graph, parse_graph
+from cost_model import GraphValidationError, analyze_graph, optimize_graph, parse_graph
 
 
 EXAMPLE_GRAPH = {
@@ -83,6 +84,64 @@ def test_example_optimizer_fuses_live_pair_and_recomputes_roofline() -> None:
     }
     assert optimized["graph_outputs"] == ["output"]
     assert [item["name"] for item in optimized["ops"]] == ["matmul", "add_bias", "relu"]
+
+
+@pytest.mark.parametrize(
+    ("outputs", "message"),
+    [
+        (None, "graph outputs must be a non-empty tuple or list"),
+        ("out", "graph outputs must be a non-empty tuple or list"),
+        ({}, "graph outputs must be a non-empty tuple or list"),
+        ({"output"}, "graph outputs must be a non-empty tuple or list"),
+        ([], "graph outputs must be a non-empty tuple or list"),
+        ((), "graph outputs must be a non-empty tuple or list"),
+        ([None], "outputs[0] must be a non-empty string"),
+        ([[]], "outputs[0] must be a non-empty string"),
+        ([""], "outputs[0] must be a non-empty string"),
+        ([" \t"], "outputs[0] must be a non-empty string"),
+        (["output", None], "outputs[1] must be a non-empty string"),
+        (["missing"], "unknown graph output value 'missing'"),
+        (["output", "missing"], "unknown graph output value 'missing'"),
+        (["output", "output"], "duplicate graph output value 'output'"),
+        (("output",), None),
+        (["output"], None),
+        (["product", "output"], None),
+        (("lhs",), None),
+    ],
+)
+def test_direct_optimizer_validates_outputs_without_mutation(
+    outputs: object, message: str | None
+) -> None:
+    graph = replace(parse_graph(EXAMPLE_GRAPH), outputs=outputs)
+    before = deepcopy(graph)
+
+    if message is None:
+        assert isinstance(outputs, (tuple, list))
+        expected = optimize_graph(parse_graph(EXAMPLE_GRAPH | {"outputs": list(outputs)}))
+        assert optimize_graph(graph) == expected
+        assert optimize_graph(graph) == expected
+    else:
+        # Existing estimator diagnostics must still win over malformed outputs.
+        for changes, earlier_message in [
+            ({"target": {}}, "graph target must be a Target definition or None"),
+            ({"operations": None}, "graph operations must be a tuple or list"),
+            ({"values": None}, "graph values must be a mapping"),
+        ]:
+            broken = replace(graph, **changes)
+            broken_before = deepcopy(broken)
+            with pytest.raises(GraphValidationError) as exc_info:
+                optimize_graph(broken)
+            assert str(exc_info.value) == earlier_message
+            assert broken == broken_before
+            assert broken.outputs is outputs
+
+        for _ in range(2):
+            with pytest.raises(GraphValidationError) as exc_info:
+                optimize_graph(graph)
+            assert str(exc_info.value) == message
+
+    assert graph == before
+    assert graph.outputs is outputs
 
 
 def test_graph_output_intermediate_is_not_fused() -> None:

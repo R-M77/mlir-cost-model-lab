@@ -19,6 +19,7 @@ from .estimator import (
     estimate_graph,
 )
 from .models import Graph
+from .parser import GraphValidationError, _require_nonempty_string
 
 
 LEGALITY_SCOPE: dict[str, Any] = {
@@ -36,6 +37,22 @@ def _legality_scope_report() -> dict[str, Any]:
         **LEGALITY_SCOPE,
         "allowed_elementwise_ops": list(LEGALITY_SCOPE["allowed_elementwise_ops"]),
     }
+
+
+def _validate_optimization_outputs(graph: Graph) -> None:
+    """Check direct Graph output roots without normalizing or mutating them."""
+    outputs = getattr(graph, "outputs", None)
+    if not isinstance(outputs, (tuple, list)) or not outputs:
+        raise GraphValidationError("graph outputs must be a non-empty tuple or list")
+    for index, name in enumerate(outputs):
+        _require_nonempty_string(name, f"outputs[{index}]")
+    seen: set[str] = set()
+    for name in outputs:
+        if name in seen:
+            raise GraphValidationError(f"duplicate graph output value {name!r}")
+        if name not in graph.values:
+            raise GraphValidationError(f"unknown graph output value {name!r}")
+        seen.add(name)
 
 
 def _live_operation_names(graph: Graph) -> set[str]:
@@ -151,6 +168,7 @@ def optimize_graph(graph: Graph) -> dict[str, Any]:
     elementwise vocabulary.  No runtime execution or IR rewrite is performed.
     """
     baseline = estimate_graph(graph)
+    _validate_optimization_outputs(graph)
     live_names = _live_operation_names(graph)
     dead_operations = [
         operation.name
