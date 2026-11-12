@@ -86,10 +86,13 @@ Duplicate JSON object keys are rejected at every nesting level in graph files,
 benchmark manifests, and budgets, including unselected cases, even when the
 repeated values are identical.
 
-Batch output keeps each report under `cases[*].report` and adds an aggregate `summary`:
+Batch output includes deterministic version metadata, keeps each report under
+`cases[*].report`, and adds an aggregate `summary`:
 
 ```json
 {
+  "benchmark_schema_version": 1,
+  "cost_model_version": 1,
   "cases": [
     {"name": "matmul_bias_relu", "path": "examples/matmul_bias_relu.json", "report": {"...": "..."}}
   ],
@@ -108,6 +111,12 @@ Batch output keeps each report under `cases[*].report` and adds an aggregate `su
 ```
 
 The summary totals use each case's normal report, or its `optimized.totals` when `--optimize` is also supplied. `estimated_time_us` is the sum of per-case roofline times when every case has a target; it is `null` for a batch with any target-less case. A positional graph path and `--benchmark` are mutually exclusive; omitting both is an error. Existing single-graph commands and their JSON shape are unchanged.
+
+The two top-level version fields are JSON integers, currently both `1`. They
+are included in normal and optimized batches, including selected cases,
+`--omit-paths`, readable/compact output, and budget-violation reports. They do
+not depend on timestamps, local paths, or the environment and are not added to
+embedded case reports or single-graph output.
 
 Schema-valid shapes and targets can still exceed the floating-point range used
 for derived costs. Unrepresentable arithmetic intensity, roofline arithmetic
@@ -193,8 +202,15 @@ PYTHONPATH=src python -m cost_model --benchmark benchmarks/target_bounds.json \
   --compare-baseline outputs/selected.baseline.json
 ```
 
-Compatibility is based on the existing, unversioned batch schema:
+Compatibility is based on the versioned batch schema:
 
+- Before checking cases, the saved report must contain top-level
+  `benchmark_schema_version` and `cost_model_version` integers matching the
+  current report (both `1` today). Missing fields, different versions, or
+  non-integer values (including booleans) fail with status `2`, empty stdout,
+  and a diagnostic naming the incompatible field. Older unversioned reports
+  are rejected; regenerate a baseline with the intended model instead of
+  adding or rewriting version fields to bypass compatibility checks.
 - The non-empty `cases` array must have unique, non-empty `name` strings and
   object `report` values. The saved and current **selected case sets must be
   identical**; the gate does not silently intersect or filter the saved report.
@@ -235,10 +251,21 @@ first). `--omit-paths` and `--compact` retain their presentation-only behavior.
 Without `--compare-baseline`, batch JSON is unchanged. The flag is rejected
 outside benchmark mode, including single-graph lowering and MLIR emission.
 
+`benchmark_schema_version` identifies the batch-report format;
+`cost_model_version` identifies its cost semantics, not the package version or
+Git revision. **Cost-model semantic changes require bumping
+`cost_model_version`**, even when the report format is unchanged. This includes
+changes to FLOP accounting, logical byte traffic, roofline calculations, or
+optimizer cost semantics. Update the version constants in
+`src/cost_model/comparison.py` and the deterministic expected fixture when
+making the corresponding change; bump `benchmark_schema_version` for
+incompatible batch-format changes. Save a fresh baseline deliberately after a
+version change rather than comparing costs across incompatible semantics.
+
 This is a bounded cost gate, not a general saved-report verifier: aggregate
 `summary`, operation details, fusion annotations, and any previous `comparison`
-are not used or recomputed. There is no schema/model-version or graph-content
-fingerprint, so callers must retain consistent model semantics and meaningful case
+are not used or recomputed. Version metadata is not a graph-content fingerprint,
+so callers must still retain their input graphs, manifests, and meaningful case
 identities across revisions. Renaming a case requires explicitly saving a new
 baseline. Estimates remain logical-model costs and idealized time, not measured
 performance. Use reasonably sized, trusted reports as for other JSON inputs.

@@ -11,6 +11,10 @@ from typing import Any
 from .parser import GraphValidationError, _parse_target, _unique_json_object
 
 
+BENCHMARK_SCHEMA_VERSION = 1
+COST_MODEL_VERSION = 1
+
+
 def _check_targets(report: dict[str, Any], *, optimize: bool, label: str) -> None:
     scopes = [("", report)]
     if optimize:
@@ -61,10 +65,11 @@ def _metrics(report: dict[str, Any], *, optimize: bool, label: str) -> dict[str,
 def compare_baseline(
     current: dict[str, Any], baseline_path: Path, *, optimize: bool
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    """Compare the consumed fields of the CLI's unversioned batch schema.
+    """Compare the consumed fields of the CLI's versioned batch schema.
 
-    Case identity, mode, targets, and selected totals establish compatibility;
-    paths and descriptive/aggregate report fields are not comparison inputs.
+    Schema/model versions, case identity, mode, targets, and selected totals
+    establish compatibility; paths and descriptive/aggregate report fields are
+    not comparison inputs.
     """
     try:
         saved = json.loads(
@@ -94,6 +99,13 @@ def compare_baseline(
         ) from exc
     if not isinstance(saved, dict):
         raise GraphValidationError("invalid baseline must contain a benchmark object")
+    for field in ("benchmark_schema_version", "cost_model_version"):
+        version = saved.get(field)
+        expected = current[field]
+        if type(version) is not int or version != expected:
+            raise GraphValidationError(
+                f"incompatible baseline {field}: expected integer {expected}"
+            )
     raw_cases = saved.get("cases")
     if not isinstance(raw_cases, list) or not raw_cases:
         raise GraphValidationError("invalid baseline cases must be a non-empty array")

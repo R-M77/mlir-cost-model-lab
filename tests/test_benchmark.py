@@ -105,7 +105,7 @@ def test_benchmark_accepts_paths_and_named_cases_with_stable_summary(
     assert first.stdout == second.stdout
 
     result = json.loads(first.stdout)
-    assert list(result) == ["cases", "summary"]
+    assert list(result) == ["benchmark_schema_version", "cost_model_version", "cases", "summary"]
     assert [case["name"] for case in result["cases"]] == ["relu_case", "named_add"]
     assert [case["path"] for case in result["cases"]] == [
         "graphs/relu.json",

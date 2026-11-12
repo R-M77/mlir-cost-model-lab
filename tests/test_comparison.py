@@ -27,6 +27,41 @@ def _save_report(tmp_path: Path, manifest: Path, *options: str) -> Path:
     return saved
 
 
+def test_saved_benchmark_versions_gate_comparison_before_cases(tmp_path: Path) -> None:
+    manifest = _batch(tmp_path, (2, 4))
+    saved = _save_report(tmp_path, manifest)
+    payload = json.loads(saved.read_text())
+    versions = {"benchmark_schema_version": 1, "cost_model_version": 1}
+    assert {field: payload.get(field) for field in versions} == versions
+    assert all(type(payload[field]) is int for field in versions)
+    repeated = _run_cli("--benchmark", str(manifest), "--compact")
+    assert repeated.returncode == 0, repeated.stderr
+    assert repeated.stdout == saved.read_text()
+
+    compatible = _run_cli(
+        "--benchmark", str(manifest), "--compare-baseline", str(saved), "--compact"
+    )
+    assert compatible.returncode == 0, compatible.stderr
+    compared = json.loads(compatible.stdout)
+    assert compared.pop("comparison")["passed"] is True
+    assert compared == payload
+
+    for field in versions:
+        for value in (None, 2):
+            incompatible = {**payload, "cases": []}
+            if value is None:
+                del incompatible[field]
+            else:
+                incompatible[field] = value
+            saved.write_text(json.dumps(incompatible), encoding="utf-8")
+            result = _run_cli(
+                "--benchmark", str(manifest), "--compare-baseline", str(saved)
+            )
+            assert result.returncode == 2
+            assert result.stdout == ""
+            assert result.stderr == f"error: incompatible baseline {field}: expected integer 1\n"
+
+
 def test_case_regression_fails_even_when_aggregate_is_unchanged(tmp_path: Path) -> None:
     manifest = _batch(tmp_path, (2, 4))
     saved = _save_report(tmp_path, manifest)
@@ -178,7 +213,8 @@ def test_comparison_rejects_excessive_json_nesting(tmp_path: Path) -> None:
     manifest = _batch(tmp_path, (2, 4))
     saved = tmp_path / "saved.json"
     saved.write_text(
-        '{"private_marker": ' + "[" * 2000 + "0" + "]" * 2000 + "}", encoding="utf-8"
+        '{"benchmark_schema_version": 1, "cost_model_version": 1, "private_marker": '
+        + "[" * 2000 + "0" + "]" * 2000 + "}", encoding="utf-8"
     )
 
     result = _run_cli("--benchmark", str(manifest), "--compare-baseline", str(saved))

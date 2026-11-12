@@ -10,7 +10,7 @@ from math import isfinite
 from pathlib import Path
 from typing import Any, Sequence, TypeGuard
 
-from .comparison import compare_baseline
+from .comparison import BENCHMARK_SCHEMA_VERSION, COST_MODEL_VERSION, compare_baseline
 from .estimator import _intensity, estimate_graph
 from .lowering import compare_matmul_lowering_graph
 from .mlir_emitter import emit_matmul_mlir_graph
@@ -165,6 +165,8 @@ def _benchmark_report(
         "estimated_time_us": estimated_time_us,
     }
     return {
+        "benchmark_schema_version": BENCHMARK_SCHEMA_VERSION,
+        "cost_model_version": COST_MODEL_VERSION,
         "cases": cases,
         "summary": {
             "case_count": len(cases),
