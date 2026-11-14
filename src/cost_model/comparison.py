@@ -3,16 +3,41 @@
 from __future__ import annotations
 
 import json
+import re
 from fractions import Fraction
+from hashlib import sha256
 from math import isfinite
 from pathlib import Path
 from typing import Any
 
+from .models import Graph
 from .parser import GraphValidationError, _parse_target, _unique_json_object
 
 
-BENCHMARK_SCHEMA_VERSION = 1
+BENCHMARK_SCHEMA_VERSION = 2
 COST_MODEL_VERSION = 1
+
+
+def _graph_fingerprint(graph: Graph) -> str:
+    """Hash parsed graph structure, excluding its display label and target.
+
+    Call only with a validated graph. Mapping order is irrelevant; operation,
+    operand, shape-axis and graph-output order are preserved. No input is changed.
+    Targets are checked separately by the saved-report compatibility gate.
+    """
+    content = {
+        "inputs": {
+            name: {"shape": tensor.shape, "dtype": tensor.dtype}
+            for name, tensor in graph.inputs.items()
+        },
+        "operations": [
+            {"name": op.name, "kind": op.kind, "inputs": op.inputs, "output": op.output}
+            for op in graph.operations
+        ],
+        "outputs": graph.outputs,
+    }
+    canonical = json.dumps(content, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return "sha256:" + sha256(canonical.encode("ascii")).hexdigest()
 
 
 def _check_targets(report: dict[str, Any], *, optimize: bool, label: str) -> None:
@@ -67,9 +92,9 @@ def compare_baseline(
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Compare the consumed fields of the CLI's versioned batch schema.
 
-    Schema/model versions, case identity, mode, targets, and selected totals
-    establish compatibility; paths and descriptive/aggregate report fields are
-    not comparison inputs.
+    Schema/model versions, case identity, graph content, mode, and targets
+    establish compatibility before selected totals are compared. Paths and
+    descriptive/aggregate report fields are not comparison inputs.
     """
     try:
         saved = json.loads(
@@ -103,8 +128,12 @@ def compare_baseline(
         version = saved.get(field)
         expected = current[field]
         if type(version) is not int or version != expected:
+            advice = (
+                "; regenerate baseline with current inputs and model"
+                if field == "benchmark_schema_version" else ""
+            )
             raise GraphValidationError(
-                f"incompatible baseline {field}: expected integer {expected}"
+                f"incompatible baseline {field}: expected integer {expected}{advice}"
             )
     raw_cases = saved.get("cases")
     if not isinstance(raw_cases, list) or not raw_cases:
@@ -130,6 +159,23 @@ def compare_baseline(
         raise GraphValidationError(
             f"incompatible baseline case set: missing={missing!r}, extra={extra!r}"
         )
+    saved_fingerprints = {case["name"]: case.get("graph_fingerprint") for case in raw_cases}
+    # Preflight every selected graph before reading any case's cost metrics.
+    for case in sorted(current["cases"], key=lambda case: case["name"]):
+        name = case["name"]
+        fingerprint = saved_fingerprints[name]
+        if (
+            not isinstance(fingerprint, str)
+            or re.fullmatch(r"sha256:[0-9a-f]{64}", fingerprint) is None
+        ):
+            raise GraphValidationError(
+                f"baseline case {name!r}: graph_fingerprint must be sha256: followed by "
+                "64 lowercase hex digits; regenerate baseline"
+            )
+        if fingerprint != case["graph_fingerprint"]:
+            raise GraphValidationError(
+                f"baseline case {name!r}: incompatible graph content (graph_fingerprint differs)"
+            )
     cases = []
     violations = []
     for case in sorted(current["cases"], key=lambda case: case["name"]):

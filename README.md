@@ -182,9 +182,23 @@ Any increase fails with status `2`, even if another case offsets it; equality
 and improvements pass. Stdout retains the batch report and adds `comparison`
 with name-sorted per-case `baseline`, `current`, and signed `delta` metrics;
 failures also produce case-specific JSON diagnostics on stderr. Missing metrics
-and incompatible reports fail closed. See the [comparison contract](docs/reference.md#saved-benchmark-comparison)
-for saving selected/optimized baselines and compatibility limits. Without this
-flag, existing JSON output is unchanged. It can be combined with `--budget`.
+and incompatible reports fail closed.
+
+Each case carries a deterministic `graph_fingerprint` of its validated input
+structure, including shapes, dtypes, ordered operations, value references, and
+ordered outputs. Compatibility requires matching fingerprints **before any cost
+comparison**, even when changed graphs have identical costs or optimize to the
+same plan. JSON formatting, object-key order, file paths, and graph display labels
+do not affect the fingerprint; target ceilings are checked separately.
+
+Batch schema version **2** adds these fingerprints; the cost-model version remains
+**1** because cost semantics have not changed. Schema-1/unversioned baselines,
+missing or malformed fingerprints, and content mismatches fail with status `2`
+and empty stdout. Regenerate old baselines deliberately; do not just edit their
+version fields. Fingerprints detect content changes, not semantic equivalence or
+tampering. See the [comparison contract](docs/reference.md#saved-benchmark-comparison)
+for the exact content definition and migration behavior. Single-graph output is
+unchanged. The comparison flag can be combined with `--budget`.
 
 `--omit-paths` removes only `cases[*].path` from batch JSON stdout, in readable
 or compact output, including when a budget fails. It leaves names, reports,

@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
+from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+from cost_model.comparison import _graph_fingerprint
+from cost_model.parser import parse_graph
 from tests.test_benchmark import _fusion_graph, _relu_graph, _run_cli
 
 
@@ -27,11 +31,128 @@ def _save_report(tmp_path: Path, manifest: Path, *options: str) -> Path:
     return saved
 
 
+def _saved_relu_costs(payload: dict[str, Any], sizes: tuple[int, int], *, optimize: bool = False) -> None:
+    """Model older cost results without changing the input graph identity."""
+    for case, size in zip(payload["cases"], sizes):
+        report = case["report"]["optimized"] if optimize else case["report"]
+        totals = report["totals"]
+        totals.update(flops=size, bytes_read=size * 4, bytes_written=size * 4)
+        if report["target"] is not None:
+            totals["roofline"]["estimated_time_us"] = size * 8 / 100000
+
+
+def test_fingerprint_canonical_content_and_nonmutation() -> None:
+    payload: Any = _fusion_graph()
+    graph = parse_graph(payload)
+    before_payload, before_graph = deepcopy(payload), deepcopy(graph)
+    canonical = {
+        "inputs": {"x": {"shape": [2], "dtype": "f32"}, "y": {"shape": [2], "dtype": "f32"}},
+        "operations": [
+            {"name": "add", "kind": "add", "inputs": ["x", "y"], "output": "added"},
+            {"name": "relu", "kind": "relu", "inputs": ["added"], "output": "output"},
+        ],
+        "outputs": ["output"],
+    }
+    expected = "sha256:" + sha256(
+        json.dumps(canonical, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("ascii")
+    ).hexdigest()
+    assert _graph_fingerprint(graph) == expected
+    assert payload == before_payload
+    assert graph == before_graph
+    payload["name"] = "another_label"
+    payload["target"] = TARGET
+    assert _graph_fingerprint(parse_graph(payload)) == expected
+
+
+@pytest.mark.parametrize("change", [
+    "shape", "dtype", "operation-order", "kind", "operand-order",
+    "output-order", "operation-name", "value-name", "unused-input", "wiring",
+])
+def test_fingerprint_preserves_graph_structure(change: str) -> None:
+    original: Any = {
+        "name": "structure",
+        "inputs": {"x": {"shape": [2, 2], "dtype": "f32"}, "y": {"shape": [2, 2], "dtype": "f32"}},
+        "ops": [
+            {"name": "first", "op": "add", "inputs": ["x", "y"], "outputs": ["a"]},
+            {"name": "second", "op": "mul", "inputs": ["x", "y"], "outputs": ["b"]},
+        ],
+        "outputs": ["a", "b"],
+    }
+    changed = deepcopy(original)
+    if change in {"shape", "dtype"}:
+        for spec in changed["inputs"].values():
+            spec[change] = [1, 4] if change == "shape" else "i32"
+    elif change == "operation-order":
+        changed["ops"].reverse()
+    elif change == "kind":
+        changed["ops"][0]["op"] = "mul"
+    elif change == "operand-order":
+        changed["ops"][0]["inputs"].reverse()
+    elif change == "output-order":
+        changed["outputs"].reverse()
+    elif change == "operation-name":
+        changed["ops"][0]["name"] = "renamed"
+    elif change == "value-name":
+        changed["ops"][0]["outputs"] = ["renamed"]
+        changed["outputs"][0] = "renamed"
+    elif change == "unused-input":
+        changed["inputs"]["unused"] = {"shape": [], "dtype": "f32"}
+    else:
+        changed["ops"][1]["inputs"][0] = "a"
+    assert _graph_fingerprint(parse_graph(changed)) != _graph_fingerprint(parse_graph(original))
+
+
+def test_reformatted_relocated_graphs_keep_fingerprint_and_comparison(tmp_path: Path) -> None:
+    graph: Any = _fusion_graph()
+    source = tmp_path / "source.json"
+    source.write_text(json.dumps(graph), encoding="utf-8")
+    manifest = tmp_path / "batch.json"
+    manifest.write_text('[{"name":"case","path":"source.json"}]', encoding="utf-8")
+    saved = _save_report(tmp_path, manifest)
+    fingerprint = json.loads(saved.read_text())["cases"][0]["graph_fingerprint"]
+    graph["inputs"] = dict(reversed(list(graph["inputs"].items())))
+    graph["name"] = "changed_label"
+    graph["target"] = None
+    relocated = tmp_path / "relocated.json"
+    relocated.write_text(json.dumps(graph, sort_keys=True, indent=4), encoding="utf-8")
+    manifest.write_text('[{"name":"case","path":"relocated.json"}]', encoding="utf-8")
+    before = relocated.read_bytes()
+    result = _run_cli("--benchmark", str(manifest), "--compare-baseline", str(saved), "--omit-paths")
+    optimized = _run_cli("--benchmark", str(manifest), "--optimize")
+    assert result.returncode == optimized.returncode == 0
+    assert result.stderr == optimized.stderr == ""
+    assert json.loads(result.stdout)["comparison"]["passed"] is True
+    for output in (result.stdout, optimized.stdout):
+        assert json.loads(output)["cases"][0]["graph_fingerprint"] == fingerprint
+    assert relocated.read_bytes() == before
+
+
+@pytest.mark.parametrize("options", [(), ("--optimize",)])
+def test_cost_neutral_graph_change_is_incompatible(tmp_path: Path, options: tuple[str, ...]) -> None:
+    manifest = _batch(tmp_path, (2, 4))
+    saved = _save_report(tmp_path, manifest, *options)
+    graph_path = tmp_path / "alpha.json"
+    graph = json.loads(graph_path.read_text())
+    graph["inputs"]["x"]["shape"] = [1, 2]
+    graph_path.write_text(json.dumps(graph), encoding="utf-8")
+    current = _run_cli("--benchmark", str(manifest), *options)
+    assert current.returncode == 0, current.stderr
+    assert json.loads(current.stdout)["summary"] == json.loads(saved.read_text())["summary"]
+
+    result = _run_cli("--benchmark", str(manifest), *options, "--compare-baseline", str(saved))
+
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert result.stderr == (
+        "error: baseline case 'alpha': incompatible graph content (graph_fingerprint differs)\n"
+    )
+
+
 def test_saved_benchmark_versions_gate_comparison_before_cases(tmp_path: Path) -> None:
     manifest = _batch(tmp_path, (2, 4))
     saved = _save_report(tmp_path, manifest)
     payload = json.loads(saved.read_text())
-    versions = {"benchmark_schema_version": 1, "cost_model_version": 1}
+    versions = {"benchmark_schema_version": 2, "cost_model_version": 1}
     assert {field: payload.get(field) for field in versions} == versions
     assert all(type(payload[field]) is int for field in versions)
     repeated = _run_cli("--benchmark", str(manifest), "--compact")
@@ -46,8 +167,8 @@ def test_saved_benchmark_versions_gate_comparison_before_cases(tmp_path: Path) -
     assert compared.pop("comparison")["passed"] is True
     assert compared == payload
 
-    for field in versions:
-        for value in (None, 2):
+    for field, expected in versions.items():
+        for value in (None, expected + 1):
             incompatible = {**payload, "cases": []}
             if value is None:
                 del incompatible[field]
@@ -59,13 +180,59 @@ def test_saved_benchmark_versions_gate_comparison_before_cases(tmp_path: Path) -
             )
             assert result.returncode == 2
             assert result.stdout == ""
-            assert result.stderr == f"error: incompatible baseline {field}: expected integer 1\n"
+            advice = "; regenerate baseline with current inputs and model" if field == "benchmark_schema_version" else ""
+            assert result.stderr == f"error: incompatible baseline {field}: expected integer {expected}{advice}\n"
+
+
+def test_schema_one_baseline_requires_regeneration(tmp_path: Path) -> None:
+    manifest = _batch(tmp_path, (2, 4))
+    saved = _save_report(tmp_path, manifest)
+    payload = json.loads(saved.read_text())
+    payload["benchmark_schema_version"] = 1
+    for case in payload["cases"]:
+        case.pop("graph_fingerprint", None)
+    saved.write_text(json.dumps(payload), encoding="utf-8")
+    result = _run_cli("--benchmark", str(manifest), "--compare-baseline", str(saved))
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert result.stderr == (
+        "error: incompatible baseline benchmark_schema_version: expected integer 2; "
+        "regenerate baseline with current inputs and model\n"
+    )
+
+
+@pytest.mark.parametrize("fingerprint", [
+    "missing", None, True, {}, "0" * 64, "sha256:" + "0" * 63,
+    "sha256:" + "A" * 64, " sha256:" + "0" * 64,
+])
+def test_invalid_fingerprint_is_rejected_before_any_case_costs(
+    tmp_path: Path, fingerprint: object
+) -> None:
+    manifest = _batch(tmp_path, (2, 4))
+    saved = _save_report(tmp_path, manifest)
+    payload = json.loads(saved.read_text())
+    # Even an earlier case's malformed totals must not hide incompatible content.
+    del payload["cases"][0]["report"]["totals"]
+    if fingerprint == "missing":
+        del payload["cases"][1]["graph_fingerprint"]
+    else:
+        payload["cases"][1]["graph_fingerprint"] = fingerprint
+    saved.write_text(json.dumps(payload), encoding="utf-8")
+    result = _run_cli("--benchmark", str(manifest), "--compare-baseline", str(saved))
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert result.stderr == (
+        "error: baseline case 'beta': graph_fingerprint must be sha256: followed by "
+        "64 lowercase hex digits; regenerate baseline\n"
+    )
 
 
 def test_case_regression_fails_even_when_aggregate_is_unchanged(tmp_path: Path) -> None:
-    manifest = _batch(tmp_path, (2, 4))
+    manifest = _batch(tmp_path, (3, 3))
     saved = _save_report(tmp_path, manifest)
-    _batch(tmp_path, (3, 3))
+    payload = json.loads(saved.read_text())
+    _saved_relu_costs(payload, (2, 4))
+    saved.write_text(json.dumps(payload), encoding="utf-8")
 
     result = _run_cli(
         "--benchmark", str(manifest), "--compare-baseline", str(saved), "--compact"
@@ -213,7 +380,7 @@ def test_comparison_rejects_excessive_json_nesting(tmp_path: Path) -> None:
     manifest = _batch(tmp_path, (2, 4))
     saved = tmp_path / "saved.json"
     saved.write_text(
-        '{"benchmark_schema_version": 1, "cost_model_version": 1, "private_marker": '
+        '{"benchmark_schema_version": 2, "cost_model_version": 1, "private_marker": '
         + "[" * 2000 + "0" + "]" * 2000 + "}", encoding="utf-8"
     )
 
@@ -431,7 +598,7 @@ def test_comparison_does_not_treat_boolean_target_as_numeric_one(tmp_path: Path,
 def test_equality_or_improvement_passes_independent_of_order_and_paths(
     tmp_path: Path, options: tuple[str, ...], sizes: tuple[int, int]
 ) -> None:
-    manifest = _batch(tmp_path, (2, 4))
+    manifest = _batch(tmp_path, sizes)
     # Mixed targets: compare beta's available time even though summary time is null.
     beta_path = tmp_path / "beta.json"
     beta = json.loads(beta_path.read_text())
@@ -439,14 +606,11 @@ def test_equality_or_improvement_passes_independent_of_order_and_paths(
     beta_path.write_text(json.dumps(beta), encoding="utf-8")
     saved = _save_report(tmp_path, manifest, *options)
     payload = json.loads(saved.read_text())
+    _saved_relu_costs(payload, (2, 4), optimize=bool(options))
     payload["cases"].reverse()
     del payload["cases"][0]["path"]
     payload["cases"][1]["path"] = "another/location.json"
     saved.write_text(json.dumps(payload), encoding="utf-8")
-    _batch(tmp_path, sizes)
-    beta = json.loads(beta_path.read_text())
-    beta["target"] = TARGET
-    beta_path.write_text(json.dumps(beta), encoding="utf-8")
     manifest.write_text('["beta.json", "alpha.json"]', encoding="utf-8")
     args = ("--benchmark", str(manifest), *options, "--case", "alpha", "--case", "beta",
             "--case", "alpha", "--omit-paths", "--compact")
@@ -471,7 +635,7 @@ def test_equality_or_improvement_passes_independent_of_order_and_paths(
     assert comparison["cases"][1]["delta"]["estimated_time_us"] == sizes[1] * 8 / 100000 - 0.00032
 
 
-def test_selected_optimized_comparison_ignores_unselected_and_unoptimized_costs(tmp_path: Path) -> None:
+def test_selected_optimized_comparison_rejects_new_dead_operations(tmp_path: Path) -> None:
     manifest = _batch(tmp_path, (2, 4))
     fusion: Any = _fusion_graph()
     fusion["target"] = TARGET
@@ -482,19 +646,15 @@ def test_selected_optimized_comparison_ignores_unselected_and_unoptimized_costs(
     saved = _save_report(tmp_path, manifest, *options)
     fusion["ops"].append({"name": "dead", "op": "relu", "inputs": ["x"], "outputs": ["dead_result"]})
     graph_path.write_text(json.dumps(fusion), encoding="utf-8")
+    current = _run_cli("--benchmark", str(manifest), *options)
+    assert current.returncode == 0, current.stderr
+    assert json.loads(current.stdout)["summary"] == json.loads(saved.read_text())["summary"]
     result = _run_cli("--benchmark", str(manifest), *options, "--compare-baseline", str(saved))
-    assert result.returncode == 0
-    assert result.stderr == ""
-    payload = json.loads(result.stdout)
-    assert payload["cases"][0]["report"]["baseline"]["totals"]["flops"] == 6
-    assert payload["comparison"] == {
-        "mode": "optimized", "passed": True, "cases": [{
-            "name": "fusion_case",
-            "baseline": {"flops": 4, "logical_bytes": 24, "estimated_time_us": 0.00024},
-            "current": {"flops": 4, "logical_bytes": 24, "estimated_time_us": 0.00024},
-            "delta": {"flops": 0, "logical_bytes": 0, "estimated_time_us": 0.0},
-        }],
-    }
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert result.stderr == (
+        "error: baseline case 'fusion_case': incompatible graph content (graph_fingerprint differs)\n"
+    )
 
 
 @pytest.mark.parametrize("options", [(), ("--optimize",)])
@@ -541,9 +701,11 @@ def test_large_integral_saved_time_keeps_one_microsecond_regression(tmp_path: Pa
 def test_budget_and_comparison_gates_are_both_enforced(
     tmp_path: Path, sizes: tuple[int, int], budget_flops: int, errors: list[str]
 ) -> None:
-    manifest = _batch(tmp_path, (2, 4))
+    manifest = _batch(tmp_path, sizes)
     saved = _save_report(tmp_path, manifest)
-    _batch(tmp_path, sizes)
+    payload = json.loads(saved.read_text())
+    _saved_relu_costs(payload, (2, 4))
+    saved.write_text(json.dumps(payload), encoding="utf-8")
     budget = tmp_path / "budget.json"
     budget.write_text(json.dumps({"aggregate": {"flops": budget_flops}}), encoding="utf-8")
     result = _run_cli(

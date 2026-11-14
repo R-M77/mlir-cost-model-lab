@@ -91,10 +91,10 @@ Batch output includes deterministic version metadata, keeps each report under
 
 ```json
 {
-  "benchmark_schema_version": 1,
+  "benchmark_schema_version": 2,
   "cost_model_version": 1,
   "cases": [
-    {"name": "matmul_bias_relu", "path": "examples/matmul_bias_relu.json", "report": {"...": "..."}}
+    {"name": "matmul_bias_relu", "path": "examples/matmul_bias_relu.json", "graph_fingerprint": "sha256:<64 lowercase hex digits>", "report": {"...": "..."}}
   ],
   "summary": {
     "case_count": 1,
@@ -112,7 +112,8 @@ Batch output includes deterministic version metadata, keeps each report under
 
 The summary totals use each case's normal report, or its `optimized.totals` when `--optimize` is also supplied. `estimated_time_us` is the sum of per-case roofline times when every case has a target; it is `null` for a batch with any target-less case. A positional graph path and `--benchmark` are mutually exclusive; omitting both is an error. Existing single-graph commands and their JSON shape are unchanged.
 
-The two top-level version fields are JSON integers, currently both `1`. They
+The top-level version fields are JSON integers: `benchmark_schema_version` is
+`2` and `cost_model_version` is `1`. They
 are included in normal and optimized batches, including selected cases,
 `--omit-paths`, readable/compact output, and budget-violation reports. They do
 not depend on timestamps, local paths, or the environment and are not added to
@@ -206,16 +207,23 @@ Compatibility is based on the versioned batch schema:
 
 - Before checking cases, the saved report must contain top-level
   `benchmark_schema_version` and `cost_model_version` integers matching the
-  current report (both `1` today). Missing fields, different versions, or
+  current report (schema `2`, cost model `1`). Missing fields, different versions, or
   non-integer values (including booleans) fail with status `2`, empty stdout,
-  and a diagnostic naming the incompatible field. Older unversioned reports
-  are rejected; regenerate a baseline with the intended model instead of
+  and a diagnostic naming the incompatible field. Older unversioned and schema-1
+  reports are rejected with schema migration advice; regenerate a baseline with
+  the intended inputs and model instead of
   adding or rewriting version fields to bypass compatibility checks.
 - The non-empty `cases` array must have unique, non-empty `name` strings and
   object `report` values. The saved and current **selected case sets must be
   identical**; the gate does not silently intersect or filter the saved report.
   Cases match by effective name (explicit manifest name, otherwise graph name),
   not array position, graph label, or file path. `path` may differ or be absent.
+- Every selected case must contain `graph_fingerprint` in the exact format
+  `sha256:` followed by 64 lowercase hexadecimal digits. Missing/malformed
+  fingerprints fail with regeneration advice; a valid but different fingerprint
+  fails as incompatible graph content, even if costs are unchanged. All selected
+  fingerprints are checked before any case's metrics. Do not add fingerprints
+  manually to legacy reports: regenerate and review a fresh baseline.
 - Normal mode reads `report.totals`; `--optimize` reads
   `report.optimized.totals`, not the embedded unfused baseline. Both runs must
   use the same mode. Incomplete optimizer wrappers and hybrid normal/optimized
@@ -237,8 +245,9 @@ The gate adds a `comparison` object to stdout, containing `mode` (`baseline` or
 `name` plus `baseline`, `current`, and `delta` objects, each with the fixed metric
 keys `flops`, `logical_bytes`, and `estimated_time_us`. Delta is **current minus
 saved baseline**: positive is worse; negative is better. No tolerance or aggregate
-offset is applied. For example, a ReLU growing from 2 to 3 elements has
-`delta: {"flops": 1, "logical_bytes": 8, "estimated_time_us": null}` without a target.
+offset is applied. These deltas compare different cost results for the **same
+input graph**, not differently shaped workloads: even a cost-neutral shape change
+is incompatible and requires a deliberately regenerated baseline.
 
 Any per-case increase emits the report and artifact on stdout and a single-line
 `error: {...}` JSON diagnostic on stderr with `error: "benchmark baseline exceeded"`
@@ -264,11 +273,43 @@ version change rather than comparing costs across incompatible semantics.
 
 This is a bounded cost gate, not a general saved-report verifier: aggregate
 `summary`, operation details, fusion annotations, and any previous `comparison`
-are not used or recomputed. Version metadata is not a graph-content fingerprint,
-so callers must still retain their input graphs, manifests, and meaningful case
+are not used or recomputed. Fingerprints are not signatures: a report's digest
+and metrics are trusted saved data, not independently authenticated or recomputed
+from operation details. Retain input graphs, manifests, and meaningful case
 identities across revisions. Renaming a case requires explicitly saving a new
 baseline. Estimates remain logical-model costs and idealized time, not measured
 performance. Use reasonably sized, trusted reports as for other JSON inputs.
+
+### Graph-content fingerprint contract
+
+`cases[*].graph_fingerprint` hashes the original validated graph, before any
+dead-operation elimination or fusion planning. Normal and optimized reports for
+the same input have the same fingerprint. The canonical content object contains:
+
+- `inputs`: a map keyed by every input value name, including unused inputs, with
+  `shape` (axis-ordered dimensions) and `dtype` from the parsed tensor.
+- `operations`: a source-ordered array of objects with `name`, `kind`, `inputs`
+  (ordered operand value names, including repeated references), and `output`
+  (the result value name). Dead operations are included.
+- `outputs`: the declaration-ordered graph output value names.
+
+Result shapes/dtypes are deterministically inferred from this content by the
+versioned model. The object is serialized with Python JSON `sort_keys=True`,
+`separators=(",", ":")`, and `ensure_ascii=True`; SHA-256 hashes those ASCII bytes.
+This makes JSON whitespace, escape spelling, and mapping insertion order
+irrelevant without sorting or deduplicating lists. Fingerprinting does not
+mutate the parsed graph or input file.
+
+Graph display labels and target ceilings are excluded: effective case names and
+targets have separate compatibility checks. File paths, timestamps, costs,
+fusion annotations, and transient metadata are not fingerprint inputs. The graph
+schema rejects unknown fields rather than silently treating them as metadata.
+Operation/value renames, operand permutations, independent-operation reordering,
+shape/dtype changes, and changed output order **do** change the fingerprint.
+This is structural content identity, not graph-isomorphism or semantic-equivalence
+detection, anonymization, or tamper protection. Changing this canonicalization
+contract requires a schema-version bump; cost-model semantics still require their
+own version bump.
 
 ## Matmul lowering exercise
 

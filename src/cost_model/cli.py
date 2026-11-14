@@ -10,7 +10,12 @@ from math import isfinite
 from pathlib import Path
 from typing import Any, Sequence, TypeGuard
 
-from .comparison import BENCHMARK_SCHEMA_VERSION, COST_MODEL_VERSION, compare_baseline
+from .comparison import (
+    BENCHMARK_SCHEMA_VERSION,
+    COST_MODEL_VERSION,
+    _graph_fingerprint,
+    compare_baseline,
+)
 from .estimator import _intensity, estimate_graph
 from .lowering import compare_matmul_lowering_graph
 from .mlir_emitter import emit_matmul_mlir_graph
@@ -99,6 +104,7 @@ def _benchmark_report(
             label = case_name or raw_graph_path
             raise GraphValidationError(f"benchmark case {label!r}: {exc}") from exc
 
+        fingerprint = _graph_fingerprint(graph)
         report = optimize_graph(graph) if optimize else estimate_graph(graph)
         effective_name = case_name or report["graph"]
         if effective_name in seen_case_names:
@@ -110,6 +116,7 @@ def _benchmark_report(
             {
                 "name": effective_name,
                 "path": raw_graph_path,
+                "graph_fingerprint": fingerprint,
                 "report": report,
             }
         )

@@ -709,7 +709,12 @@ def test_strict_graph_schema_preserves_dynamic_benchmark_and_budget_case_names(
     assert result.stderr == ""
     report = json.loads(result.stdout)
     assert report["cases"] == [
-        {"name": case_name, "path": "graph.json", "report": analyze_graph(payload)}
+        {
+            "name": case_name,
+            "path": "graph.json",
+            "graph_fingerprint": "sha256:2cb18aabb5493fa3a85931d7dec8c1abb1a59962c0277c95c1ce64c8bb0b18c4",
+            "report": analyze_graph(payload),
+        }
     ]
     assert report["summary"]["case_count"] == 1
 
