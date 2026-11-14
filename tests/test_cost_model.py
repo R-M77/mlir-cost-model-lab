@@ -1150,6 +1150,17 @@ def test_oversized_integer_target_returns_validation_and_cli_errors(
     assert result.stderr == f"error: {message}\n"
 
 
+def test_direct_estimate_graph_rejects_malformed_outputs_before_fusion_report() -> None:
+    graph = replace(parse_graph(EXAMPLE_GRAPH), outputs=None)
+    original = deepcopy(vars(graph))
+
+    with pytest.raises(GraphValidationError) as error:
+        estimate_graph(graph)
+
+    assert str(error.value) == "graph outputs must be a non-empty tuple or list"
+    assert vars(graph) == original
+
+
 def test_direct_estimate_graph_rejects_deleted_operations_container() -> None:
     graph = parse_graph(EXAMPLE_GRAPH)
     object.__delattr__(graph, "operations")

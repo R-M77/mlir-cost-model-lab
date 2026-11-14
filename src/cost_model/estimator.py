@@ -229,6 +229,9 @@ def estimate_graph(graph: Graph) -> dict[str, Any]:
         raise GraphValidationError("graph target must be present")
     _validate_estimation_target(graph.target)
     operations = _estimate_operations(graph)
+    outputs = getattr(graph, "outputs", None)
+    if not isinstance(outputs, (tuple, list)) or not outputs:
+        raise GraphValidationError("graph outputs must be a non-empty tuple or list")
     total_flops = sum(item["flops"] for item in operations)
     total_bytes_read = sum(item["bytes_read"] for item in operations)
     total_bytes_written = sum(item["bytes_written"] for item in operations)
