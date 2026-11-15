@@ -10,6 +10,7 @@ from math import isfinite
 from pathlib import Path
 from typing import Any, Sequence, TypeGuard
 
+from .analysis import analyze_dependency_depth
 from .comparison import (
     BENCHMARK_SCHEMA_VERSION,
     COST_MODEL_VERSION,
@@ -432,6 +433,11 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--critical-path",
+        action="store_true",
+        help="report unit-cost dependency depth for one graph, without cost estimates",
+    )
+    parser.add_argument(
         "--optimize",
         action="store_true",
         help="emit an opt-in before/after liveness-aware optimization report",
@@ -470,6 +476,22 @@ def _build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
+    if args.critical_path:
+        for option, enabled in (
+            ("--benchmark", args.benchmark is not None),
+            ("--optimize", args.optimize),
+            ("--lower-matmul", args.lower_matmul),
+            ("--emit-mlir", args.emit_mlir),
+            ("--format markdown", args.format == "markdown"),
+            ("--budget", args.budget is not None),
+            ("--compare-baseline", args.compare_baseline is not None),
+            ("--case", bool(args.case_names)),
+            ("--omit-paths", args.omit_paths),
+        ):
+            if enabled:
+                parser.error(f"--critical-path cannot be combined with {option}")
+        if args.graph is None:
+            parser.error("--critical-path requires a single graph path")
     if args.format == "markdown":
         if args.benchmark is None:
             parser.error("--format markdown requires --benchmark JSON")
@@ -534,7 +556,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             if args.emit_mlir:
                 sys.stdout.write(emit_matmul_mlir_graph(graph))
                 return 0
-            if args.lower_matmul:
+            if args.critical_path:
+                report = analyze_dependency_depth(graph)
+            elif args.lower_matmul:
                 report = compare_matmul_lowering_graph(
                     graph,
                     mode=args.lowering_mode,

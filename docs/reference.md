@@ -20,6 +20,7 @@ The package under `src/cost_model` is split into small layers:
 
 - `models.py` — frozen tensor, operation, and graph dataclasses (graph maps remain mutable).
 - `parser.py` — JSON schema validation, value lookup, and static shape inference.
+- `analysis.py` — opt-in unit-cost dependency depth and output critical-path analysis.
 - `estimator.py` — FLOP, byte-traffic, arithmetic-intensity, roofline, and baseline fusion calculations.
 - `optimizer.py` — opt-in liveness-aware elementwise fusion planning and before/after reporting.
 - `comparison.py` — saved batch-report compatibility and per-case cost regression comparison.
@@ -366,6 +367,49 @@ This is structural content identity, not graph-isomorphism or semantic-equivalen
 detection, anonymization, or tamper protection. Changing this canonicalization
 contract requires a schema-version bump; cost-model semantics still require their
 own version bump.
+
+## Dependency-depth analysis
+
+Inspect the original graph before any optimization with:
+
+```bash
+PYTHONPATH=src python -m cost_model --critical-path --compact examples/matmul_bias_relu.json
+```
+
+`from cost_model import analyze_dependency_depth` exposes
+`analyze_dependency_depth(graph: Graph) -> dict[str, Any]`. Supply a validated
+graph from `parse_graph` or `load_graph`; this function does not revalidate
+manually constructed or mutated graphs. It processes operations in source order:
+graph input values have depth `0`, and each operation's output has depth
+`1 + max(operand depths)`. Every operation is treated as one unit, independent of
+its kind, shape, dtype, target, or cost.
+
+The JSON-friendly report has exactly these keys in this order:
+
+- `graph`: the original graph name.
+- `operation_count`: the number of all source operations.
+- `critical_path_depth`: maximum depth among declared graph outputs, not all
+  operations. Direct-input outputs have depth `0` (including when all outputs
+  are inputs).
+- `operations`: every operation, including dead operations, in source order;
+  each entry has `name`, `op`, `output`, and integer `dependency_depth` in that order.
+- `outputs`: graph outputs in declaration order; each entry has `value` and
+  integer `dependency_depth` in that order.
+
+The example reports critical-path depth `3`. Independent operations do not add
+to each other's depths; dead branches remain visible but cannot inflate the
+output critical path. No optimization or graph mutation is performed. This is
+an unweighted structural depth, not a latency estimate, execution schedule, or
+prediction of available hardware parallelism. No targets, paths, timestamps,
+cost estimates, or benchmark version fields are included.
+
+`--critical-path` requires one positional graph path. JSON is readable by default;
+`--compact` emits one line, and explicit `--format json` is accepted. It rejects
+`--benchmark`, `--optimize`, `--lower-matmul`, `--emit-mlir`, `--format markdown`,
+`--budget`, `--compare-baseline`, `--case`, and `--omit-paths` with deterministic
+parser errors. Malformed graph inputs use the existing status `2`, empty stdout,
+and `error:` stderr diagnostic. Existing default reports, FLOP/byte semantics,
+and benchmark schema/cost-model versions are unchanged.
 
 ## Matmul lowering exercise
 

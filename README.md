@@ -19,6 +19,8 @@ ceilings you supply.
   source-ordered values, dtype and reference checks
 - **Explainable cost accounting:** per-operation and aggregate work, reads,
   writes, arithmetic intensity, and optional roofline classification
+- **Dependency-depth analysis:** inspect source-ordered operation depths and the
+  longest dependency chain to declared outputs before optimization
 - **Liveness-aware optimization planning:** remove dead operations from the
   modeled plan and account for adjacent single-use elementwise fusion,
   preserving graph outputs and an unchanged baseline report
@@ -64,6 +66,25 @@ One `add_bias` → `relu` fusion removes a modeled intermediate write and read:
 **64 bytes, or 25.8% of this graph's logical traffic**. No graph is executed or
 rewritten, and this result is not a measured speedup. ReLU comparisons count as
 one scalar operation each under the model's `flops` convention.
+
+### Inspect dependency depth
+
+```bash
+PYTHONPATH=src python -m cost_model --critical-path --compact examples/matmul_bias_relu.json
+```
+
+The example's critical-path depth is `3`: matmul → add → ReLU. Inputs have
+depth `0`; each operation adds `1` to the maximum depth of its operands. Every
+operation is listed in source order, including dead operations, but only declared
+graph outputs determine `critical_path_depth`. An output that is a direct input
+has depth `0`.
+
+This opt-in structural report is separate from cost estimation and optimization:
+it does not model latency, scheduling, or hardware performance. It requires one
+graph path and supports `--compact`, not batch, optimization, lowering, MLIR,
+Markdown, budget, baseline-comparison, case-selection, or path-omission modes.
+The Python API is `analyze_dependency_depth(graph)` for a parsed, validated
+`Graph`; existing cost reports and benchmark schemas are unchanged.
 
 ### Batched matmul
 
@@ -288,6 +309,7 @@ dtype, and removes the last axis (a rank-1 input produces scalar shape `[]`).
 | --- | --- |
 | `models.py` | Tensor, operation, target and graph records |
 | `parser.py` | Input validation, value lookup and shape inference |
+| `analysis.py` | Unit-cost dependency depths and output critical-path depth |
 | `estimator.py` | Baseline costs, roofline estimates and local fusion hints |
 | `optimizer.py` | Liveness and legality-scoped fusion cost planning |
 | `lowering.py` | Scalar and tiled/vector matmul representations |

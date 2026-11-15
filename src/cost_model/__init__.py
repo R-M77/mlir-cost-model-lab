@@ -1,5 +1,6 @@
 """A tiny, explainable tensor graph cost model."""
 
+from .analysis import analyze_dependency_depth
 from .estimator import analyze_graph, estimate_graph
 from .lowering import (
     LoweringValidationError,
@@ -23,6 +24,7 @@ __all__ = [
     "Operation",
     "Target",
     "Tensor",
+    "analyze_dependency_depth",
     "analyze_graph",
     "compare_matmul_lowering",
     "compare_matmul_lowering_graph",
