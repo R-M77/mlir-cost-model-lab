@@ -180,6 +180,62 @@ single-line `error: {...}` JSON diagnostic on stderr, and exits with status `2`.
 Adding `--budget` alone does not change batch JSON output; the separate
 `--compare-baseline` flag below adds its comparison artifact.
 
+## Markdown benchmark summaries
+
+`--format {json,markdown}` is a presentation choice; JSON is the default and its
+schema, cost-model version, bytes, and gate semantics are unchanged. Markdown
+requires an explicit `--benchmark JSON`. It supports `--case`, `--optimize`,
+`--compare-baseline`, `--budget`, and `--omit-paths`; `--compact`, a positional
+graph, `--lower-matmul`, and `--emit-mlir` are incompatible. Existing lowering
+option validation still applies; format selection does not enable lowering.
+
+After installing the package, save a CI/review artifact with:
+
+```bash
+mkdir -p outputs
+python -m cost_model --benchmark benchmarks/target_bounds.json \
+  --compare-baseline benchmarks/target_bounds.expected.json \
+  --budget benchmarks/target_bounds.budget.json --format markdown \
+  > outputs/cost-estimates.md
+```
+
+Keep the exit code as the CI gate, even if the file is uploaded or copied into a
+step summary. No automatic posting, network access, or CI configuration is added.
+A failed comparison or budget returns `2` **with** a Markdown report, the same
+stderr diagnostic(s) and explicit individual/overall FAIL status. All requested
+gates must pass for overall PASS; with neither requested, it says `not requested`.
+Incompatible saved schema, graph fingerprints, modes or target ceilings, invalid
+inputs/budgets, and unavailable budget metrics return `2` **without** stdout.
+
+The report is titled **cost estimates**, labels normal/optimized mode and schema/
+cost-model versions, and sorts cases by raw name (not escaped display text). Each
+row uses existing selected report totals: FLOPs, logical bytes (reads + writes),
+and `estimated_time_us` from its roofline bound, or `unavailable` without a target.
+These are logical-model costs and idealized bounds, not measured runtime. There
+is no new cost calculation or timing measurement. The optional comparison table
+shows each case's PASS/FAIL and baseline/current/delta for all three metrics;
+delta means current minus saved baseline and positive is worse. A case fails on
+any increase, even if another metric/case improves. Missing comparison times are
+`unavailable`, not zero. Budget failures also list the existing violation scope,
+metric, actual and limit; the checker identifies per-case scopes as `case`.
+
+Integers are rendered as exact decimal text; floats use Python's deterministic
+round-trip representation (scientific notation when needed), not fixed-decimal
+rounding. Positive nonzero deltas have a `+` prefix, negative deltas retain `-`,
+and tiny nonzero values do not display as zero. Names are escaped as table text:
+HTML delimiters, ampersands, backticks, pipes, backslashes and link punctuation
+are entity-escaped; CR/LF, control/format characters and Unicode line separators
+appear as visible escaped code points. Host-specific post-processing may still
+add links (for example GitHub's email autolinking); escaping is not a guarantee
+against host-generated links. Rendering does not normalize
+raw identifiers, change selection, mutate reports, or alter fingerprints.
+
+Markdown intentionally omits paths, graph structure and fingerprints; it is not
+a complete machine-readable report and **cannot be used as a JSON baseline**.
+`--omit-paths` is accepted but has no effect on its output. Escaping and path
+omission are **not anonymization** or tamper protection: names and cost values may
+still disclose information, and stderr is not redacted. Review before sharing.
+
 ## Saved benchmark comparison
 
 `--compare-baseline REPORT.json` accepts saved **batch output**, not a benchmark

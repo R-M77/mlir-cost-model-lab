@@ -21,6 +21,7 @@ from .lowering import compare_matmul_lowering_graph
 from .mlir_emitter import emit_matmul_mlir_graph
 from .optimizer import optimize_graph
 from .parser import GraphValidationError, _unique_json_object, load_graph
+from .reporting import render_markdown
 
 
 def _load_benchmark_cases(
@@ -412,6 +413,12 @@ def _build_parser() -> argparse.ArgumentParser:
         help="fail on per-case cost increases against a saved benchmark report",
     )
     parser.add_argument(
+        "--format",
+        choices=("json", "markdown"),
+        default="json",
+        help="output format (default: json); markdown requires --benchmark",
+    )
+    parser.add_argument(
         "--compact",
         action="store_true",
         help="emit one-line JSON instead of the default readable form",
@@ -463,6 +470,11 @@ def _build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
+    if args.format == "markdown":
+        if args.benchmark is None:
+            parser.error("--format markdown requires --benchmark JSON")
+        if args.compact:
+            parser.error("--format markdown cannot be combined with --compact")
     if args.compare_baseline is not None and args.benchmark is None:
         parser.error("--compare-baseline requires --benchmark JSON")
     if args.emit_mlir:
@@ -547,7 +559,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             ],
         }
 
-    if args.compact:
+    if args.format == "markdown":
+        sys.stdout.write(render_markdown(
+            output_report, optimize=args.optimize,
+            budget_violations=violations if args.budget is not None else None,
+        ))
+    elif args.compact:
         print(json.dumps(output_report, separators=(",", ":")))
     else:
         print(json.dumps(output_report, indent=2))

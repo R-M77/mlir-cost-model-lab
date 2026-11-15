@@ -156,6 +156,40 @@ names must be unique. Repeatable `--case` selects exact names in original manife
 order, but every case is loaded and validated before selection. A positional
 graph and `--benchmark` are mutually exclusive.
 
+### Markdown summaries for CI and review
+
+JSON remains the default; `--format json` is explicit and preserves the existing
+report format. Use `--format markdown` with an explicit `--benchmark` to save a
+human-readable artifact (after installation):
+
+```bash
+mkdir -p outputs
+python -m cost_model --benchmark benchmarks/target_bounds.json \
+  --compare-baseline benchmarks/target_bounds.expected.json \
+  --budget benchmarks/target_bounds.budget.json --format markdown \
+  > outputs/cost-estimates.md
+```
+
+The file can be retained as a CI artifact or displayed in a step summary. The
+command's exit status must still determine success: Markdown retains explicit
+baseline/budget **PASS/FAIL**, and an overall gate status; failed gates keep the
+artifact on stdout and return `2` with the same stderr diagnostics as JSON.
+Compatibility/validation errors return `2` with empty stdout instead. With no
+gates requested the summary says so, rather than claiming PASS.
+
+The name-sorted table reports FLOPs, logical bytes, and idealized
+`estimated_time_us`, **not measured runtime**. `--optimize` selects optimized
+costs; missing target times are `unavailable`. Baseline comparisons retain each
+case's baseline/current/signed delta and outcome; positive deltas are worse.
+Integers stay exact and float text is not rounded to a fixed number of places.
+Markdown is batch-only, cannot be combined with `--compact`, single-graph
+lowering, or MLIR emission, and is not a saved JSON baseline format.
+
+Case names are escaped for tables/HTML-like text and controls are made visible.
+Paths and graph details are not rendered, regardless of `--omit-paths` (which
+remains accepted). **This is not anonymization**: case names and cost values may
+carry private data, and stderr is unchanged. Review artifacts before sharing.
+
 Each case report appears under `cases[*].report`; `summary` aggregates normal
 totals or `optimized.totals` with `--optimize`. Batch `estimated_time_us` sums
 per-case roofline times, or is `null` if any selected case has no target.
