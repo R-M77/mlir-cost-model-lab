@@ -7,6 +7,59 @@ from typing import Any
 from .models import Graph
 
 
+def analyze_liveness(graph: Graph) -> dict[str, Any]:
+    """Report live tensor storage at entry and after each source operation.
+
+    Requires a parsed, validated graph. Future uses include all operations,
+    even dead ones; graph outputs are retained through exit. Unused inputs
+    and results with no future use are excluded. Each distinct live value
+    contributes Tensor.nbytes once. This boundary metric excludes transient
+    operation allocations, aliasing, and buffer reuse; it is not device memory.
+    Names are lexicographically sorted, and the earliest boundary wins peak ties
+    (peak_after=None denotes entry). The graph is not mutated or optimized.
+    """
+    last_use = {
+        name: index
+        for index, op in enumerate(graph.operations)
+        for name in op.inputs
+    }
+    last_use.update({name: len(graph.operations) for name in graph.outputs})
+    live = {name: tensor.nbytes for name, tensor in graph.inputs.items() if name in last_use}
+    initial_values = sorted(live)
+    initial_bytes = sum(live.values())
+    peak_bytes = initial_bytes
+    peak_after: str | None = None
+    operations: list[dict[str, Any]] = []
+
+    for index, op in enumerate(graph.operations):
+        for name in op.inputs:
+            if last_use[name] == index:
+                live.pop(name, None)
+        if last_use.get(op.output, -1) > index:
+            live[op.output] = graph.values[op.output].nbytes
+        live_bytes = sum(live.values())
+        operations.append({
+            "name": op.name,
+            "op": op.kind,
+            "output": op.output,
+            "live_values": sorted(live),
+            "live_bytes": live_bytes,
+        })
+        if live_bytes > peak_bytes:
+            peak_bytes = live_bytes
+            peak_after = op.name
+
+    return {
+        "graph": graph.name,
+        "operation_count": len(graph.operations),
+        "initial_live_values": initial_values,
+        "initial_live_bytes": initial_bytes,
+        "peak_live_bytes": peak_bytes,
+        "peak_after": peak_after,
+        "operations": operations,
+    }
+
+
 def analyze_dependency_depth(graph: Graph) -> dict[str, Any]:
     """Report unit-cost dependency depth for a parsed, validated graph.
 

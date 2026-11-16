@@ -21,6 +21,8 @@ ceilings you supply.
   writes, arithmetic intensity, and optional roofline classification
 - **Dependency-depth analysis:** inspect source-ordered operation depths and the
   longest dependency chain to declared outputs before optimization
+- **Live-storage analysis:** inspect which tensor values survive each operation
+  and locate the peak boundary storage before optimization
 - **Liveness-aware optimization planning:** remove dead operations from the
   modeled plan and account for adjacent single-use elementwise fusion,
   preserving graph outputs and an unchanged baseline report
@@ -85,6 +87,37 @@ graph path and supports `--compact`, not batch, optimization, lowering, MLIR,
 Markdown, budget, baseline-comparison, case-selection, or path-omission modes.
 The Python API is `analyze_dependency_depth(graph)` for a parsed, validated
 `Graph`; existing cost reports and benchmark schemas are unchanged.
+
+### Inspect live tensor storage
+
+```bash
+PYTHONPATH=src python -m cost_model --liveness --compact examples/matmul_bias_relu.json
+```
+
+The example reports `initial_live_bytes: 88`, then `live_bytes` of `48`, `32`,
+and `32` after matmul, add, and ReLU. Its `peak_live_bytes` is `88` and
+`peak_after` is `null`, meaning graph entry. Use this report to inspect tensor
+lifetimes and storage pressure along the original source order, separately
+from the estimator's cumulative read/write traffic.
+
+Only already-available values needed by future operations or declared graph
+outputs remain live. Operands are released after their last use; outputs are
+retained through graph exit, including outputs that are direct inputs. Unused
+inputs and dead results with no future use are excluded. All operations are
+still analyzed, including dead branches: this is not dead-code elimination.
+Each distinct live value contributes `Tensor.nbytes` once. Names are sorted
+lexicographically, operations stay in source order, and the earliest boundary
+wins peak ties (entry before operations).
+
+This is **boundary live storage**, not physical peak memory: it excludes
+transient allocations during operations, aliasing, buffer reuse, and allocator
+overhead. `analyze_liveness(graph)` is available from `cost_model` and
+`cost_model.analysis` for validated graphs, without graph mutation. The CLI
+requires one graph path; readable JSON, `--compact`, and `--format json` are
+supported. Benchmark, optimization, critical-path, lowering, MLIR, Markdown,
+budget, baseline-comparison, case-selection, and path-omission modes are
+incompatible. See the [liveness contract](docs/reference.md#liveness-and-peak-live-storage)
+for the exact output shape. Default cost and benchmark schemas are unchanged.
 
 ### Batched matmul
 
@@ -309,7 +342,7 @@ dtype, and removes the last axis (a rank-1 input produces scalar shape `[]`).
 | --- | --- |
 | `models.py` | Tensor, operation, target and graph records |
 | `parser.py` | Input validation, value lookup and shape inference |
-| `analysis.py` | Unit-cost dependency depths and output critical-path depth |
+| `analysis.py` | Dependency depths, output critical path, and boundary live storage |
 | `estimator.py` | Baseline costs, roofline estimates and local fusion hints |
 | `optimizer.py` | Liveness and legality-scoped fusion cost planning |
 | `lowering.py` | Scalar and tiled/vector matmul representations |

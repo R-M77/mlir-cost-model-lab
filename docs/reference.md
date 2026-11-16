@@ -20,7 +20,7 @@ The package under `src/cost_model` is split into small layers:
 
 - `models.py` — frozen tensor, operation, and graph dataclasses (graph maps remain mutable).
 - `parser.py` — JSON schema validation, value lookup, and static shape inference.
-- `analysis.py` — opt-in unit-cost dependency depth and output critical-path analysis.
+- `analysis.py` — opt-in dependency depth, output critical path, and boundary live-storage analysis.
 - `estimator.py` — FLOP, byte-traffic, arithmetic-intensity, roofline, and baseline fusion calculations.
 - `optimizer.py` — opt-in liveness-aware elementwise fusion planning and before/after reporting.
 - `comparison.py` — saved batch-report compatibility and per-case cost regression comparison.
@@ -410,6 +410,82 @@ cost estimates, or benchmark version fields are included.
 parser errors. Malformed graph inputs use the existing status `2`, empty stdout,
 and `error:` stderr diagnostic. Existing default reports, FLOP/byte semantics,
 and benchmark schema/cost-model versions are unchanged.
+
+## Liveness and peak live storage
+
+Inspect tensor lifetimes and storage pressure in the original source order:
+
+```bash
+PYTHONPATH=src python -m cost_model --liveness --compact examples/matmul_bias_relu.json
+```
+
+`analyze_liveness(graph: Graph) -> dict[str, Any]` is exported from both
+`cost_model.analysis` and `cost_model`. Supply a validated graph from
+`parse_graph` or `load_graph`; manually constructed or subsequently mutated
+graphs are not revalidated. The analysis does not mutate or optimize the graph.
+
+### Boundary semantics
+
+- Analyze every operation in source order, including dead operations. A future
+  use in a dead branch still counts; no dead-code elimination is performed.
+- At entry, retain only graph inputs referenced by any operation or declared as
+  graph outputs. Unused inputs contribute no live storage.
+- After each operation, release operands whose last source-order use has passed,
+  unless they are graph outputs. Retain the produced value only if a later
+  operation uses it or it is a graph output. An unused dead result contributes
+  no storage at this boundary.
+- Declared graph outputs stay live from their availability through exit. An
+  output that is a direct input stays live from entry, even if no operation
+  references it. Earlier intermediate outputs are likewise retained.
+- Each distinct live value contributes its inferred `Tensor.nbytes` once,
+  including scalar storage and dtype width. Repeated operand references do not
+  multiply live storage, unlike the estimator's per-reference traffic counts.
+  Broadcast copies are not materialized; inferred result shapes determine
+  result storage.
+- Snapshot value names are lexicographically sorted by raw name, independent of
+  input-map or output-declaration order. Operation records remain source-ordered.
+- The peak is the maximum across entry and all post-operation snapshots. The
+  earliest boundary wins ties: entry first, then source operation order, not
+  operation-name order.
+
+This metric is **boundary live storage**, not execution-time allocation peak or
+measured device memory. It excludes temporary output/operand coexistence during
+an operation, scratch space, aliasing, buffer reuse, allocator overhead, caches,
+and scheduling changes. Dead results may need transient allocation even though
+they are absent from snapshots. It is neither a memory budget gate nor an
+optimized-storage plan; target ceilings have no effect on this report.
+
+### Output and CLI contract
+
+The JSON-friendly report contains exactly these keys in this order:
+
+- `graph`: original graph name.
+- `operation_count`: number of all source operations.
+- `initial_live_values`: sorted live input names at entry.
+- `initial_live_bytes`: integer entry storage in bytes.
+- `peak_live_bytes`: maximum integer boundary storage in bytes.
+- `peak_after`: operation name at the earliest peak, or `null` for entry.
+- `operations`: source-ordered records, each containing `name`, `op`, `output`,
+  `live_values` (sorted names after this operation), and integer `live_bytes`,
+  in that key order. The final snapshot contains exactly the graph output
+  values, in lexical rather than declaration order.
+
+The demo starts with `88` bytes, then reports `48`, `32`, and `32` bytes;
+`peak_live_bytes` is `88` and `peak_after` is `null`. No target, cost estimate,
+path, timestamp, or benchmark version fields are added.
+
+`--liveness` requires one positional graph path. JSON is readable by default;
+`--compact` emits one line (as for dependency-depth reports), and explicit
+`--format json` is accepted. It rejects `--benchmark`, `--optimize`,
+`--critical-path`, `--lower-matmul`, `--emit-mlir`, `--format markdown`, `--budget`,
+`--compare-baseline`, `--case`, and `--omit-paths`. Non-default `--lowering-mode`,
+`--tile-size`, and `--vector-width` are also rejected; omitted or explicit
+defaults do not select lowering. Compatibility checks precede graph loading
+and report the first conflict in the order listed above, independent of CLI
+argument order. These parser errors return `2` with usage/error text on stderr
+and empty stdout. Malformed graph files use the existing status `2`, empty
+stdout, and `error:` stderr path. Default estimates, optimizer reports,
+benchmark schemas/fixtures, and schema/cost-model versions are unchanged.
 
 ## Matmul lowering exercise
 
