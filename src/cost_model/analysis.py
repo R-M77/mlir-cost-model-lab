@@ -1,10 +1,56 @@
-"""Target-independent structural analysis of validated tensor graphs."""
+"""Structural and target-weighted analysis of validated tensor graphs."""
 
 from __future__ import annotations
 
+from math import isfinite
 from typing import Any
 
+from .estimator import estimate_graph
 from .models import Graph
+from .parser import GraphValidationError
+
+
+def analyze_weighted_critical_path(graph: Graph) -> dict[str, Any]:
+    """Estimate an unlimited-parallelism schedule for a validated graph.
+
+    Durations are the shared estimator's per-operation roofline times. Inputs
+    are ready at zero; each operation waits for all operands. All operations
+    are reported in source order, but only declared outputs determine the
+    critical path. This neither mutates the graph nor measures runtime.
+    """
+    if graph.target is None:
+        raise GraphValidationError("weighted critical path requires a target")
+    estimates = estimate_graph(graph)["ops"]
+    finishes = {name: 0.0 for name in graph.inputs}
+    operations: list[dict[str, Any]] = []
+    for op, estimate in zip(graph.operations, estimates):
+        duration = estimate["roofline"]["estimated_time_us"]
+        start = max(finishes[name] for name in op.inputs)
+        finish = start + duration
+        if not isfinite(finish):
+            raise GraphValidationError(
+                "weighted critical path arithmetic exceeds finite floating-point range"
+            )
+        finishes[op.output] = finish
+        operations.append({
+            "name": op.name,
+            "op": op.kind,
+            "output": op.output,
+            "duration_us": duration,
+            "start_us": start,
+            "finish_us": finish,
+        })
+
+    return {
+        "graph": graph.name,
+        "operation_count": len(graph.operations),
+        "critical_path_time_us": max(finishes[name] for name in graph.outputs),
+        "operations": operations,
+        "outputs": [
+            {"value": name, "finish_us": finishes[name]}
+            for name in graph.outputs
+        ],
+    }
 
 
 def analyze_liveness(graph: Graph) -> dict[str, Any]:

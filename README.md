@@ -21,6 +21,8 @@ ceilings you supply.
   writes, arithmetic intensity, and optional roofline classification
 - **Dependency-depth analysis:** inspect source-ordered operation depths and the
   longest dependency chain to declared outputs before optimization
+- **Target-weighted critical path:** inspect modeled operation start/finish times
+  under unlimited dependency-aware parallelism, using existing roofline costs
 - **Live-storage analysis:** inspect which tensor values survive each operation
   and locate the peak boundary storage before optimization
 - **Liveness-aware optimization planning:** remove dead operations from the
@@ -83,10 +85,39 @@ has depth `0`.
 
 This opt-in structural report is separate from cost estimation and optimization:
 it does not model latency, scheduling, or hardware performance. It requires one
-graph path and supports `--compact`, not batch, optimization, lowering, MLIR,
+graph path and supports `--compact`, not weighted-critical-path, batch, optimization, lowering, MLIR,
 Markdown, budget, baseline-comparison, case-selection, or path-omission modes.
 The Python API is `analyze_dependency_depth(graph)` for a parsed, validated
 `Graph`; existing cost reports and benchmark schemas are unchanged.
+
+### Estimate a target-weighted critical path
+
+```bash
+PYTHONPATH=src python -m cost_model --weighted-critical-path --compact examples/matmul_bias_relu.json
+```
+
+The example reports `critical_path_time_us: 0.00248`. Each operation's
+`duration_us` is exactly its existing roofline `estimated_time_us`; `start_us`
+is the maximum operand finish time, and `finish_us` is start plus duration.
+Inputs are ready at `0`. Independent branches overlap with unlimited modeled
+parallelism. All operations are listed in source order, including dead branches,
+but only declared outputs determine the critical path; direct-input outputs
+finish at `0`.
+
+This is a **target-weighted scheduling estimate, not measured runtime**. It
+does not model resource contention, launch overhead, or device scheduling, and
+is separate from unit dependency depth (`--critical-path`) and aggregate cost
+estimation. `analyze_weighted_critical_path(graph)` is exported from `cost_model`
+for validated graphs without mutation; a missing/null target raises
+`GraphValidationError("weighted critical path requires a target")`.
+
+The CLI requires one graph path and supports readable JSON, `--compact`, and
+explicit `--format json`. Batch, optimization, liveness, unit-critical-path,
+lowering, MLIR, Markdown, budget, baseline-comparison, case-selection, and
+path-omission modes are incompatible, as are non-default lowering parameters.
+Malformed or targetless graphs return status `2`, empty stdout, and concise
+`error:` stderr. See the [weighted report contract](docs/reference.md#target-weighted-critical-path)
+for exact keys. Existing estimator and benchmark schemas are unchanged.
 
 ### Inspect live tensor storage
 
@@ -114,7 +145,7 @@ transient allocations during operations, aliasing, buffer reuse, and allocator
 overhead. `analyze_liveness(graph)` is available from `cost_model` and
 `cost_model.analysis` for validated graphs, without graph mutation. The CLI
 requires one graph path; readable JSON, `--compact`, and `--format json` are
-supported. Benchmark, optimization, critical-path, lowering, MLIR, Markdown,
+supported. Benchmark, optimization, critical-path, weighted-critical-path, lowering, MLIR, Markdown,
 budget, baseline-comparison, case-selection, and path-omission modes are
 incompatible. See the [liveness contract](docs/reference.md#liveness-and-peak-live-storage)
 for the exact output shape. Default cost and benchmark schemas are unchanged.
@@ -342,7 +373,7 @@ dtype, and removes the last axis (a rank-1 input produces scalar shape `[]`).
 | --- | --- |
 | `models.py` | Tensor, operation, target and graph records |
 | `parser.py` | Input validation, value lookup and shape inference |
-| `analysis.py` | Dependency depths, output critical path, and boundary live storage |
+| `analysis.py` | Unit dependency depths, target-weighted critical path, and boundary live storage |
 | `estimator.py` | Baseline costs, roofline estimates and local fusion hints |
 | `optimizer.py` | Liveness and legality-scoped fusion cost planning |
 | `lowering.py` | Scalar and tiled/vector matmul representations |

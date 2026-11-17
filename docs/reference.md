@@ -20,7 +20,7 @@ The package under `src/cost_model` is split into small layers:
 
 - `models.py` — frozen tensor, operation, and graph dataclasses (graph maps remain mutable).
 - `parser.py` — JSON schema validation, value lookup, and static shape inference.
-- `analysis.py` — opt-in dependency depth, output critical path, and boundary live-storage analysis.
+- `analysis.py` — opt-in unit dependency depth, target-weighted critical path, and boundary live-storage analysis.
 - `estimator.py` — FLOP, byte-traffic, arithmetic-intensity, roofline, and baseline fusion calculations.
 - `optimizer.py` — opt-in liveness-aware elementwise fusion planning and before/after reporting.
 - `comparison.py` — saved batch-report compatibility and per-case cost regression comparison.
@@ -405,11 +405,77 @@ cost estimates, or benchmark version fields are included.
 
 `--critical-path` requires one positional graph path. JSON is readable by default;
 `--compact` emits one line, and explicit `--format json` is accepted. It rejects
-`--benchmark`, `--optimize`, `--lower-matmul`, `--emit-mlir`, `--format markdown`,
+`--weighted-critical-path`, `--benchmark`, `--optimize`, `--lower-matmul`, `--emit-mlir`, `--format markdown`,
 `--budget`, `--compare-baseline`, `--case`, and `--omit-paths` with deterministic
 parser errors. Malformed graph inputs use the existing status `2`, empty stdout,
 and `error:` stderr diagnostic. Existing default reports, FLOP/byte semantics,
 and benchmark schema/cost-model versions are unchanged.
+
+## Target-weighted critical path
+
+```bash
+PYTHONPATH=src python -m cost_model --weighted-critical-path --compact examples/matmul_bias_relu.json
+```
+
+`analyze_weighted_critical_path(graph: Graph) -> dict[str, Any]` is exported from
+`cost_model.analysis` and `cost_model`. Supply a validated graph from `parse_graph`
+or `load_graph`; this is not a general verifier for manually constructed or
+subsequently mutated graphs. The analysis does not mutate or optimize the graph.
+It requires a non-null target, otherwise raising
+`GraphValidationError("weighted critical path requires a target")`.
+
+### Scheduling semantics
+
+- Each operation's duration is exactly the shared estimator's existing per-op
+  roofline `estimated_time_us`, with no new cost formula or rounding.
+- Graph inputs finish at `0.0`. Process operations in source order; an operation
+  starts at the maximum finish time of its operands and finishes at start plus
+  duration. Repeated operands do not add waiting time.
+- Independent branches overlap under **unlimited dependency-aware parallelism**.
+  There is no resource contention or global serialization in this model.
+- All operations are reported, including dead branches. Only declared graph
+  outputs determine `critical_path_time_us`; dead operations cannot inflate it.
+  Outputs that are direct inputs finish at `0.0`, including when all outputs
+  are inputs. Output records preserve declaration order.
+
+This is a **target-weighted scheduling estimate, not measured runtime** or a
+prediction of hardware parallelism. It omits launch overhead, cache effects,
+shared compute/bandwidth limits, and device scheduling. Unlike `--critical-path`,
+which counts every operation as one unit without a target, it weights the graph
+by target-dependent operation costs. It is also distinct from the estimator's
+graph-level roofline total (which applies the roofline formula to aggregate
+work and traffic, not a dependency schedule or sum of per-operation times).
+
+### Output and CLI contract
+
+The JSON-friendly report has exactly these keys in this order:
+
+- `graph`: original graph name.
+- `operation_count`: number of all source operations.
+- `critical_path_time_us`: maximum finish time among declared graph outputs.
+- `operations`: all operations in source order, each with `name`, `op`, `output`,
+  `duration_us`, `start_us`, and `finish_us`, in that key order. Time units are
+  microseconds; durations retain the estimator's exact floating-point values.
+- `outputs`: outputs in declaration order, each with `value` and `finish_us`,
+  in that key order.
+
+The demo's operation durations are `0.00104`, `0.0008`, and `0.00064`
+microseconds, with starts `0.0`, `0.00104`, and `0.00184`, and critical path
+`0.00248`. No target metadata, paths, timestamps, or version fields are added.
+
+`--weighted-critical-path` requires one positional graph path. JSON is readable
+by default; `--compact` emits one line, and explicit `--format json` is accepted.
+It rejects `--benchmark`, `--optimize`, `--liveness`, `--critical-path`,
+`--lower-matmul`, `--emit-mlir`, `--format markdown`, `--budget`,
+`--compare-baseline`, `--case`, and `--omit-paths`. Non-default `--lowering-mode`,
+`--tile-size`, and `--vector-width` are also incompatible; omitted or explicit
+defaults do not select lowering. Checks precede graph loading and report the
+first conflict in the listed order, independent of argument order. Parser errors
+return `2`, empty stdout, and usage/error stderr. Malformed or targetless graph
+files return `2`, empty stdout, and a concise `error:` diagnostic without a
+traceback. Unrepresentable schedule arithmetic fails with `GraphValidationError`
+rather than emitting non-finite times. Default estimates, optimizer reports,
+benchmark fixtures, and schema/cost-model versions are unchanged.
 
 ## Liveness and peak live storage
 
@@ -477,7 +543,7 @@ path, timestamp, or benchmark version fields are added.
 `--liveness` requires one positional graph path. JSON is readable by default;
 `--compact` emits one line (as for dependency-depth reports), and explicit
 `--format json` is accepted. It rejects `--benchmark`, `--optimize`,
-`--critical-path`, `--lower-matmul`, `--emit-mlir`, `--format markdown`, `--budget`,
+`--critical-path`, `--weighted-critical-path`, `--lower-matmul`, `--emit-mlir`, `--format markdown`, `--budget`,
 `--compare-baseline`, `--case`, and `--omit-paths`. Non-default `--lowering-mode`,
 `--tile-size`, and `--vector-width` are also rejected; omitted or explicit
 defaults do not select lowering. Compatibility checks precede graph loading

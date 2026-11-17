@@ -10,7 +10,7 @@ from math import isfinite
 from pathlib import Path
 from typing import Any, Sequence, TypeGuard
 
-from .analysis import analyze_dependency_depth, analyze_liveness
+from .analysis import analyze_dependency_depth, analyze_liveness, analyze_weighted_critical_path
 from .comparison import (
     BENCHMARK_SCHEMA_VERSION,
     COST_MODEL_VERSION,
@@ -443,6 +443,11 @@ def _build_parser() -> argparse.ArgumentParser:
         help="report unit-cost dependency depth for one graph, without cost estimates",
     )
     parser.add_argument(
+        "--weighted-critical-path",
+        action="store_true",
+        help="report a target-weighted dependency schedule for one graph (not measured runtime)",
+    )
+    parser.add_argument(
         "--optimize",
         action="store_true",
         help="emit an opt-in before/after liveness-aware optimization report",
@@ -481,6 +486,27 @@ def _build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
+    if args.weighted_critical_path:
+        for option, enabled in (
+            ("--benchmark", args.benchmark is not None),
+            ("--optimize", args.optimize),
+            ("--liveness", args.liveness),
+            ("--critical-path", args.critical_path),
+            ("--lower-matmul", args.lower_matmul),
+            ("--emit-mlir", args.emit_mlir),
+            ("--format markdown", args.format == "markdown"),
+            ("--budget", args.budget is not None),
+            ("--compare-baseline", args.compare_baseline is not None),
+            ("--case", bool(args.case_names)),
+            ("--omit-paths", args.omit_paths),
+            ("--lowering-mode", args.lowering_mode != "scalar"),
+            ("--tile-size", args.tile_size != 16),
+            ("--vector-width", args.vector_width != 4),
+        ):
+            if enabled:
+                parser.error(f"--weighted-critical-path cannot be combined with {option}")
+        if args.graph is None:
+            parser.error("--weighted-critical-path requires a single graph path")
     if args.liveness:
         for option, enabled in (
             ("--benchmark", args.benchmark is not None),
@@ -581,7 +607,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             if args.emit_mlir:
                 sys.stdout.write(emit_matmul_mlir_graph(graph))
                 return 0
-            if args.liveness:
+            if args.weighted_critical_path:
+                report = analyze_weighted_critical_path(graph)
+            elif args.liveness:
                 report = analyze_liveness(graph)
             elif args.critical_path:
                 report = analyze_dependency_depth(graph)
