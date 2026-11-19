@@ -32,6 +32,8 @@ ceilings you supply.
   tiled/vector templates, with explicit scalar tails and signed cost deltas
 - **Textual MLIR emission:** deterministic MLIR for one standalone rank-2 f32
   matmul, without requiring MLIR tooling
+- **Typed graph IR emission:** deterministic MLIR-inspired text for the full
+  parsed graph vocabulary, with normalized SSA names and explicit tensor types
 - **Deterministic regression checks:** batch cases, exact JSON fixtures, case
   selection, absolute budgets, and saved-report per-case cost comparison gates
 
@@ -207,6 +209,34 @@ separate vector and scalar-tail templates, including zero-count categories.
 Cache feasibility, alignment, register pressure, instruction scheduling, and
 generated machine-code quality are not modeled.
 
+### Emit typed graph IR
+
+After installation, inspect the complete example as a typed textual artifact:
+
+```bash
+cost-model --emit-graph-ir examples/matmul_bias_relu.json
+python -m cost_model --emit-graph-ir examples/matmul_bias_relu.json
+```
+
+`emit_graph_ir(payload)` validates a mapping; `emit_graph_ir_graph(graph)` accepts
+a parsed, validated `Graph`. Both are exported from `cost_model`. They emit one
+`module` containing `func.func @main`, typed `"cost_model.<kind>"` operations, and
+a typed `return`. All seven parsed operations, dtypes, and shapes (including
+batched matmul and scalar tensors) are supported. Inputs are sorted by raw value
+name and renamed `%arg0`, `%arg1`, …; results are `%v0`, `%v1`, … in source order.
+Unused inputs, dead operations, repeated operands, and declared output order are
+preserved. Formatting is stable, with a trailing newline.
+
+This is **MLIR-inspired textual IR, not upstream MLIR**: no IR parsing, compilation,
+execution, optimization, or MLIR-tool verification is performed. Graph/operation
+labels, targets, paths, and costs are not emitted; shapes and dtypes remain visible.
+The CLI requires one graph path and emits readable text only. Benchmark,
+optimization, liveness, either critical-path mode, matmul lowering, `--emit-mlir`,
+compact, Markdown, budget, baseline, case-selection, and path-omission modes are
+incompatible, as are non-default lowering parameters. Malformed inputs return
+status `2`, empty stdout, and concise `error:` stderr. See the
+[exact graph IR contract](docs/reference.md#typed-graph-ir-emission).
+
 ### Emit textual MLIR
 
 ```bash
@@ -378,6 +408,7 @@ dtype, and removes the last axis (a rank-1 input produces scalar shape `[]`).
 | `optimizer.py` | Liveness and legality-scoped fusion cost planning |
 | `lowering.py` | Scalar and tiled/vector matmul representations |
 | `mlir_emitter.py` | Deterministic standalone matmul MLIR emission |
+| `graph_ir_emitter.py` | Typed MLIR-inspired graph text for the full parsed vocabulary |
 | `comparison.py` | Saved-report compatibility and per-case regression artifacts |
 | `cli.py` / `__main__.py` | Single/batch reports, selection, gates and output controls |
 

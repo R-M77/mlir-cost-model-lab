@@ -2,6 +2,7 @@
 
 from .analysis import analyze_dependency_depth, analyze_liveness, analyze_weighted_critical_path
 from .estimator import analyze_graph, estimate_graph
+from .graph_ir_emitter import emit_graph_ir, emit_graph_ir_graph
 from .lowering import (
     LoweringValidationError,
     compare_matmul_lowering,
@@ -31,6 +32,8 @@ __all__ = [
     "compare_matmul_lowering",
     "compare_matmul_lowering_graph",
     "estimate_graph",
+    "emit_graph_ir",
+    "emit_graph_ir_graph",
     "emit_matmul_mlir",
     "emit_matmul_mlir_graph",
     "optimize_graph",

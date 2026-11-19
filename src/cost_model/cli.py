@@ -18,6 +18,7 @@ from .comparison import (
     compare_baseline,
 )
 from .estimator import _intensity, estimate_graph
+from .graph_ir_emitter import emit_graph_ir_graph
 from .lowering import compare_matmul_lowering_graph
 from .mlir_emitter import emit_matmul_mlir_graph
 from .optimizer import optimize_graph
@@ -463,6 +464,11 @@ def _build_parser() -> argparse.ArgumentParser:
         help="emit textual MLIR for one standalone rank-2 f32 matmul graph",
     )
     parser.add_argument(
+        "--emit-graph-ir",
+        action="store_true",
+        help="emit MLIR-inspired typed graph text (not upstream MLIR)",
+    )
+    parser.add_argument(
         "--lowering-mode",
         choices=("scalar", "tiled"),
         default="scalar",
@@ -486,6 +492,29 @@ def _build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
+    if args.emit_graph_ir:
+        for option, enabled in (
+            ("--benchmark", args.benchmark is not None),
+            ("--optimize", args.optimize),
+            ("--liveness", args.liveness),
+            ("--critical-path", args.critical_path),
+            ("--weighted-critical-path", args.weighted_critical_path),
+            ("--lower-matmul", args.lower_matmul),
+            ("--emit-mlir", args.emit_mlir),
+            ("--compact", args.compact),
+            ("--format markdown", args.format == "markdown"),
+            ("--budget", args.budget is not None),
+            ("--compare-baseline", args.compare_baseline is not None),
+            ("--case", bool(args.case_names)),
+            ("--omit-paths", args.omit_paths),
+            ("--lowering-mode", args.lowering_mode != "scalar"),
+            ("--tile-size", args.tile_size != 16),
+            ("--vector-width", args.vector_width != 4),
+        ):
+            if enabled:
+                parser.error(f"--emit-graph-ir cannot be combined with {option}")
+        if args.graph is None:
+            parser.error("--emit-graph-ir requires a single graph path")
     if args.weighted_critical_path:
         for option, enabled in (
             ("--benchmark", args.benchmark is not None),
@@ -604,6 +633,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         else:
             assert args.graph is not None
             graph = load_graph(args.graph)
+            if args.emit_graph_ir:
+                sys.stdout.write(emit_graph_ir_graph(graph))
+                return 0
             if args.emit_mlir:
                 sys.stdout.write(emit_matmul_mlir_graph(graph))
                 return 0

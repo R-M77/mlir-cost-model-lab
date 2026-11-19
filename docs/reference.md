@@ -26,6 +26,7 @@ The package under `src/cost_model` is split into small layers:
 - `comparison.py` — saved batch-report compatibility and per-case cost regression comparison.
 - [`lowering.py`](../src/cost_model/lowering.py) — an opt-in, target-independent scalar or tiled/vector matmul lowering exercise and cost comparison.
 - [`mlir_emitter.py`](../src/cost_model/mlir_emitter.py) — deterministic textual MLIR emission for one standalone rank-2 f32 matmul.
+- `graph_ir_emitter.py` — deterministic MLIR-inspired typed text for all parsed graphs.
 - `cli.py` / `__main__.py` — stable `python -m cost_model` interface, batch benchmark mode, deterministic budget gate, and readable JSON output.
 
 The parser processes operations in source order, so an operation can only use an input or an earlier result. Elementwise `add` and `mul` use trailing-dimension broadcasting; `matmul` accepts rank-2-or-higher operands and broadcasts their batch prefixes using the same right-aligned rule. Lowering and textual MLIR emission remain rank-2 only. An optional validated target is carried with the graph. The estimator preserves operation order and emits JSON-friendly integer counts plus floating-point intensity and roofline values.
@@ -708,6 +709,70 @@ single graph path and cannot be combined with `--benchmark`, `--optimize`,
 `--lower-matmul`, `--compact`, `--omit-paths`, or `--budget`; `--case` is also
 unavailable because it requires benchmark mode.
 
+## Typed graph IR emission
+
+After an editable installation, either entry point emits the same readable text:
+
+```bash
+cost-model --emit-graph-ir examples/matmul_bias_relu.json
+python -m cost_model --emit-graph-ir examples/matmul_bias_relu.json
+```
+
+```text
+module {
+  func.func @main(%arg0: tensor<4xf32>, %arg1: tensor<2x3xf32>, %arg2: tensor<3x4xf32>) -> tensor<2x4xf32> {
+    %v0 = "cost_model.matmul"(%arg1, %arg2) : (tensor<2x3xf32>, tensor<3x4xf32>) -> tensor<2x4xf32>
+    %v1 = "cost_model.add"(%v0, %arg0) : (tensor<2x4xf32>, tensor<4xf32>) -> tensor<2x4xf32>
+    %v2 = "cost_model.relu"(%v1) : (tensor<2x4xf32>) -> tensor<2x4xf32>
+    return %v2 : tensor<2x4xf32>
+  }
+}
+```
+
+`emit_graph_ir(payload: Mapping[str, Any]) -> str` validates through `parse_graph`;
+`emit_graph_ir_graph(graph: Graph) -> str` accepts a validated graph from
+`parse_graph` or `load_graph`, without revalidating manually constructed or mutated
+graphs. Both are public exports from `cost_model`. Neither mutates the input.
+
+- Sort all input declarations lexicographically by raw value name, independently
+  of JSON object-key order, assigning `%arg0`, `%arg1`, …, including unused inputs.
+- Preserve all operations in source order, even dead operations, assigning result
+  names `%v0`, `%v1`, …. Emit each kind as `"cost_model.<kind>"` with ordered
+  operand names (including repeats), explicit operand types, and an inferred
+  result type. No rewrites, fusion, or dead-code elimination are performed.
+- Accept the parser's `matmul`, `add`, `mul`, `relu`, `softmax`, `layer_norm`, and
+  `reduce_sum`, including batched matmul and broadcasted elementwise operations.
+  Last-axis normalization/reduction semantics are unchanged; no attributes are
+  added. Preserve all parser dtype spellings, including `bool` and `u8`.
+- Render rank-N types as `tensor<D0x...xDTYPE>` and scalars as `tensor<DTYPE>`
+  (for example `tensor<f32>`, never `tensor<xf32>`).
+- Always emit one `module`, one `func.func @main`, and a `return` terminator.
+  Function results and return operands/types retain declared graph output order,
+  including direct-input or intermediate outputs. A single result uses
+  `-> tensor<...>`; multiple results use `-> (tensor<...>, tensor<...>)` and
+  `return %value0, %value1 : tensor<...>, tensor<...>`. Use two-space indentation
+  per nesting level, LF line endings, and exactly one trailing newline.
+
+This is an **MLIR-inspired textual artifact, not upstream MLIR** or a registered
+MLIR dialect. There is no parser for the emitted IR, compilation, execution,
+target lowering, or verification by MLIR tooling. It does not replace or alter
+the separate rank-2 f32 `--emit-mlir` matmul artifact. Graph/operation labels and
+original value names are not printed (input names still determine argument
+order). No targets, paths, costs, timestamps, or benchmark versions are emitted.
+Normalized names are not anonymization: shapes, dtypes, and structure remain.
+
+`--emit-graph-ir` requires exactly one positional graph path. It rejects
+`--benchmark`, `--optimize`, `--liveness`, `--critical-path`,
+`--weighted-critical-path`, `--lower-matmul`, `--emit-mlir`, `--compact`,
+`--format markdown`, `--budget`, `--compare-baseline`, `--case`, and `--omit-paths`.
+Non-default `--lowering-mode`, `--tile-size`, or `--vector-width` are rejected;
+omitted or explicit defaults do not select lowering. The default JSON format
+selector (including explicit `--format json`) does not wrap or change this text.
+Compatibility checks precede file loading, returning parser status `2`, empty
+stdout, and usage/error stderr. File/graph validation errors return status `2`,
+empty stdout, and concise `error:` stderr. Estimator/optimizer semantics,
+benchmark schema, and cost-model version are unchanged.
+
 ## Input format
 
 A graph has a name, named tensor inputs, a source-ordered list of single-output operations, graph outputs, and an optional target for roofline analysis:
@@ -929,6 +994,7 @@ The legality scope is intentionally explicit: this IR has no side-effect, layout
 - Default fusion reporting is an informational local opportunity heuristic; only the opt-in optimizer applies liveness and the narrower legality checks documented above.
 - The lowering exercise supports one standalone rank-2 `matmul`; it is a target-independent representation, not an MLIR parser or lowering pass.
 - The separate textual MLIR emitter supports one standalone rank-2 f32 `matmul` only. Neither lowering nor emission supports batched operands; estimation support does not imply backend support.
+- The generic typed graph IR emitter supports the full parsed vocabulary, but is only MLIR-inspired text, not a compilable or executable backend.
 - Scalar lowering counts both operand loads per reduction term. Tiled lowering models ideal reuse and vector template counts. Neither representation generates or executes code.
 - A supplied target provides idealized peak compute and bandwidth ceilings only. Roofline `estimated_time_us` values omit latency, utilization, vectorization, parallelism, overlap, and device-specific instruction costs, so they are lower-bound estimates rather than measured performance.
 
