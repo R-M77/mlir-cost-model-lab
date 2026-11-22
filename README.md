@@ -435,5 +435,5 @@ described in [privacy guidance](docs/privacy.md).
 
 ## License
 
-Licensing for this project is undecided. No LICENSE file is included in the
-current source tree.
+You can use, modify, and redistribute this code under the [MIT License](LICENSE).
+Include the copyright and permission notice with copies or substantial portions of the code.
