@@ -100,18 +100,49 @@ def _estimate_operations(graph: Graph) -> list[dict[str, Any]]:
     return reports
 
 
+def _operand_use_counts(graph: Graph) -> Counter[str]:
+    return Counter(name for operation in graph.operations for name in operation.inputs)
+
+
+def _fusion_blocking_reasons(
+    producer: Operation,
+    consumer: Operation,
+    *,
+    use_count: int,
+    graph_output: bool,
+    adjacent: bool,
+) -> list[str]:
+    """Return all blockers for a known original-graph edge in stable order."""
+    reasons = []
+    if graph_output:
+        reasons.append("graph_output")
+    if use_count > 1:
+        reasons.append("multiple_uses")
+    if not adjacent:
+        reasons.append("non_adjacent")
+    if producer.kind not in ELEMENTWISE_OPS:
+        reasons.append("non_elementwise_producer")
+    if consumer.kind not in ELEMENTWISE_OPS:
+        reasons.append("non_elementwise_consumer")
+    return reasons
+
+
 def _fusion_report(graph: Graph) -> dict[str, Any]:
-    consumers: Counter[str] = Counter(
-        input_name
-        for operation in graph.operations
-        for input_name in operation.inputs
-    )
+    use_counts = _operand_use_counts(graph)
+    # Leave diagnostics for malformed direct Graph output roots to the validator.
+    outputs = {name for name in graph.outputs if isinstance(name, str)}
     candidates: list[dict[str, Any]] = []
     for producer, consumer in zip(graph.operations, graph.operations[1:]):
         intermediate = producer.output
-        if producer.kind not in ELEMENTWISE_OPS or consumer.kind not in ELEMENTWISE_OPS:
+        if intermediate not in consumer.inputs:
             continue
-        if intermediate not in consumer.inputs or consumers[intermediate] != 1:
+        if _fusion_blocking_reasons(
+            producer,
+            consumer,
+            use_count=use_counts[intermediate],
+            graph_output=intermediate in outputs,
+            adjacent=True,
+        ):
             continue
         bytes_avoided = 2 * graph.values[intermediate].nbytes
         candidates.append(

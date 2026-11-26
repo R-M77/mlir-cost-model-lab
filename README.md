@@ -119,6 +119,35 @@ inputs. Stable function and SSA names accompany `module`, `func.func`,
 with `--benchmark`, `--optimize`, `--lower-matmul`, `--compact`, `--omit-paths`,
 or `--budget`.
 
+### Explain fusion hints
+
+```bash
+PYTHONPATH=src python -m cost_model.fusion_analysis examples/matmul_bias_relu.json
+```
+
+The JSON report lists actual operation-to-operation `edges` in producer source
+order, then consumer source order. In this example, `matmul` → `add_bias` is
+blocked by a non-elementwise producer; `add_bias` → `relu` is eligible and
+accounts for all `64` bytes in `total_bytes_avoided`. To see a retained-output
+blocker, add `"biased"` to `outputs` in a copy of the example. The total becomes
+`0`, and the default estimator no longer lists that candidate.
+
+Each edge reports the producer, consumer, intermediate, and `use_count` across
+the whole source graph. Repeated operands increase this count but do not create
+extra rows. The `blocking_reasons` list reports all applicable reasons in this
+order: `graph_output`, `multiple_uses`, `non_adjacent`,
+`non_elementwise_producer`, `non_elementwise_consumer`. The model treats only
+`add`, `mul`, and `relu` as elementwise. An `eligible` edge models one avoided
+write and read (`bytes_avoided = 2 × tensor.nbytes`); blocked edges report zero.
+
+In Python, import `analyze_fusion` from `cost_model.fusion_analysis` and pass a
+validated `Graph` from `load_graph` or `parse_graph`. The CLI validates its input
+with `load_graph`; malformed graphs exit with status `2` and an `error:`
+diagnostic on stderr. This report uses the original graph, including dead
+operations, just like the default estimator's hints. It does not rewrite the
+graph, predict a runtime benefit, or replace the liveness-aware `--optimize`
+cost plan.
+
 ## Batch reports and CLI
 
 ```bash
@@ -221,8 +250,8 @@ multiple live uses. This is a cost plan, not execution or an IR rewrite.
 Static positive dimensions and topologically ordered, single-output operations
 keep the model inspectable. It has no symbolic shapes, side-effect/layout/alias
 analysis, calibrated device model, numerical execution or general compiler
-legality proof. Default fusion hints are only local opportunities; the opt-in
-plan additionally protects graph outputs and accounts for liveness.
+legality proof. Default fusion hints protect graph outputs but count all uses
+in the original graph; the opt-in plan accounts for liveness.
 
 Logical traffic counts stored operands, not materialized broadcast copies or
 measured DRAM traffic. Target ceilings omit latency, utilization, caches,
